@@ -1,0 +1,143 @@
+name: Build Smart Road installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate the AutoCAD bundle
+        id: bundle
+        shell: pwsh
+        run: |
+          $bundle = Join-Path $PWD 'SmartRoad.bundle'
+          [xml]$manifest = Get-Content (Join-Path $bundle 'PackageContents.xml') -Raw
+          $app = $manifest.ApplicationPackage
+          $version = [string]$app.AppVersion
+          $component = $app.Components.ComponentEntry
+          $runtime = $app.Components.RuntimeRequirements
+          if ($version -notmatch '^\d+\.\d+\.\d+$' -or $version -ne $component.Version) {
+            throw 'Bundle versions must match and use major.minor.patch.'
+          }
+          if ($runtime.SeriesMin -ne 'R20.1' -or $runtime.SeriesMax -ne 'R20.1') {
+            throw 'The package must target AutoCAD 2016 (R20.1).'
+          }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -cne "v$version") {
+            throw "Release tag must match the bundle version: v$version"
+          }
+
+          $lisp = Join-Path $bundle $component.ModuleName
+          if ((Get-FileHash $lisp).Hash -ne (Get-FileHash 'Smart Road.lsp').Hash) {
+            throw 'Bundled Lisp and repository source differ.'
+          }
+          $buttons = [regex]::Matches((Get-Content $lisp -Raw), '"(?:\^C)*([A-Z][A-Z0-9]+) " "(SmartRoad\w+)"')
+          if ($buttons.Count -eq 0) { throw 'No toolbar buttons found.' }
+          foreach ($button in $buttons) {
+            $command = $button.Groups[1].Value
+            $icon = $button.Groups[2].Value
+            if (-not (Select-String -Path $lisp -Pattern "(?i)^\(defun c:${command}\s" -Quiet)) {
+              throw "Toolbar command is missing: $command"
+            }
+            foreach ($size in 16, 32) {
+              $bmp = [IO.File]::ReadAllBytes((Join-Path $bundle "Contents/Icons/$icon$size.bmp"))
+              if ($bmp.Length -lt 26 -or $bmp[0] -ne 66 -or $bmp[1] -ne 77 -or
+                  [BitConverter]::ToInt32($bmp, 18) -ne $size -or
+                  [Math]::Abs([BitConverter]::ToInt32($bmp, 22)) -ne $size) {
+                throw "Invalid toolbar icon: $icon$size.bmp"
+              }
+            }
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Install the pinned Inno Setup compiler
+        shell: pwsh
+        run: |
+          $download = Join-Path $env:RUNNER_TEMP 'innosetup-6.4.3.exe'
+          $compiler = Join-Path $env:RUNNER_TEMP 'inno-6.4.3'
+          Invoke-WebRequest 'https://github.com/jrsoftware/issrc/releases/download/is-6_4_3/innosetup-6.4.3.exe' -OutFile $download
+          if ((Get-FileHash $download).Hash -ne 'f3c42116542c4cc57263c5ba6c4feabfc49fe771f2f98a79d2f7628b8762723b') {
+            throw 'Inno Setup download checksum mismatch.'
+          }
+          $process = Start-Process $download -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER /DIR=`"$compiler`"" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Inno Setup installation failed: $($process.ExitCode)" }
+          "SR_ISCC=$(Join-Path $compiler 'ISCC.exe')" >> $env:GITHUB_ENV
+
+      - name: Build Windows EXE and portable ZIP
+        shell: pwsh
+        env:
+          SR_VERSION: ${{ steps.bundle.outputs.version }}
+        run: |
+          & $env:SR_ISCC "/DSmartRoadVersion=$env:SR_VERSION" 'installer/SmartRoad.iss'
+          if ($LASTEXITCODE -ne 0) { throw "Installer compilation failed: $LASTEXITCODE" }
+          Compress-Archive -Path 'SmartRoad.bundle', 'README.md', 'Smart Road.lsp' -DestinationPath "dist/SmartRoad-AutoCAD-2016-v$env:SR_VERSION.zip"
+
+      - name: Test upgrade and uninstall on Windows
+        shell: pwsh
+        env:
+          SR_VERSION: ${{ steps.bundle.outputs.version }}
+        run: |
+          $exe = (Resolve-Path "dist/SmartRoad-AutoCAD-2016-v$env:SR_VERSION-Setup.exe").Path
+          $target = Join-Path $env:APPDATA 'Autodesk/ApplicationPlugins/SmartRoad.bundle'
+          if (Test-Path $target) { throw 'Expected an empty installer test environment.' }
+          $null = New-Item (Join-Path $target 'Contents') -ItemType Directory -Force
+          Set-Content (Join-Path $target 'PackageContents.xml') '<ApplicationPackage AppVersion="2.1.0"/>'
+          $lisp = Join-Path $target 'Contents/Smart Road.lsp'
+          Set-Content $lisp 'Old copy installed manually'
+          $userFile = Join-Path $target 'User notes.txt'
+          Set-Content $userFile 'Must survive upgrade and uninstall'
+          foreach ($attempt in 1, 2) {
+            $process = Start-Process $exe -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-' -Wait -PassThru
+            if ($process.ExitCode -ne 0) { throw "Installation $attempt failed: $($process.ExitCode)" }
+            if ((Get-FileHash $lisp).Hash -ne (Get-FileHash 'Smart Road.lsp').Hash) { throw 'Lisp was not upgraded.' }
+            [xml]$installed = Get-Content (Join-Path $target 'PackageContents.xml') -Raw
+            if ($installed.ApplicationPackage.AppVersion -ne $env:SR_VERSION) { throw 'Installed version is incorrect.' }
+            if (-not (Test-Path $userFile)) { throw 'Upgrade removed an unrelated file.' }
+          }
+          $uninstall = @(Get-ChildItem (Join-Path $env:LOCALAPPDATA 'SmartRoad/Uninstall') -Filter 'unins*.exe')
+          if ($uninstall.Count -ne 1) { throw 'Expected one registered uninstaller after reinstall.' }
+          $process = Start-Process $uninstall[0].FullName -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -Wait -PassThru
+          if ($process.ExitCode -ne 0 -or (Test-Path $lisp) -or -not (Test-Path $userFile)) {
+            throw 'Uninstall did not remove the installed files cleanly.'
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SmartRoad-AutoCAD-2016-v${{ steps.bundle.outputs.version }}
+          path: |
+            dist/*.exe
+            dist/*.zip
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.exe dist/*.zip
+          else
+            gh release create "$TAG" dist/*.exe dist/*.zip --verify-tag --generate-notes
+          fi
