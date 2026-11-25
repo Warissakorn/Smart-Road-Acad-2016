@@ -19,7 +19,7 @@ PANELS = {
     "Roads": ("DROAD", "RNET", "SRROAD", "SRQUICK"),
     "Walk & Transit": ("SRWALK", "SRTRANSIT"),
     "Junctions": ("SRJUNCTION", "SRCONNECT"),
-    "Edit & Report": ("SREDIT", "SRSECTION", "SRQUANTITY", "SMARTROAD"),
+    "Edit & Report": ("SREDIT", "SRSECTION", "SRSTYLE", "SRQUANTITY", "SMARTROAD"),
 }
 EMPTY_SECTIONS = (
     "AcceleratorRoot", "DigitizerButtonRoot", "DoubleClickRoot", "ImageMenuRoot",
