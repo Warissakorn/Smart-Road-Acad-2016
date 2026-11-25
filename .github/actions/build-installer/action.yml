@@ -15,11 +15,21 @@ runs:
         [xml]$manifest = Get-Content (Join-Path $bundle 'PackageContents.xml') -Raw
         $app = $manifest.ApplicationPackage
         $version = [string]$app.AppVersion
-        $component = $app.Components.ComponentEntry
+        $components = @($app.Components.ComponentEntry)
+        $lispEntry = @($components | Where-Object { $_.ModuleName -like '*.lsp' })
+        $ribbonEntry = @($components | Where-Object { $_.ModuleName -like '*.cuix' })
         $runtime = $app.Components.RuntimeRequirements
-        if ($version -notmatch '^\d+\.\d+\.\d+$' -or $version -ne $component.Version) {
+        if ($version -notmatch '^\d+\.\d+\.\d+$' -or
+            @($components | Where-Object { $_.Version -ne $version }).Count -ne 0) {
           throw 'Bundle versions must match and use major.minor.patch.'
         }
+        if ($lispEntry.Count -ne 1 -or $ribbonEntry.Count -ne 1 -or
+            $ribbonEntry[0].ModuleName -ne './Contents/SmartRoadRibbon.cuix' -or
+            $ribbonEntry[0].LoadOnAutoCADStartup -ne 'True') {
+          throw 'Expected one AutoLISP entry and one startup entry for the Smart Road ribbon.'
+        }
+        python tools/build_ribbon.py --check
+        if ($LASTEXITCODE -ne 0) { throw 'The ribbon package check failed.' }
         if ($runtime.SeriesMin -ne 'R20.1' -or $runtime.SeriesMax -ne 'R20.1') {
           throw 'The package must target AutoCAD 2016 (R20.1).'
         }
@@ -27,7 +37,7 @@ runs:
           throw "Release tag must match the bundle version: v$version"
         }
 
-        $lisp = Join-Path $bundle $component.ModuleName
+        $lisp = Join-Path $bundle ($lispEntry[0].ModuleName)
         if ((Get-FileHash $lisp).Hash -ne (Get-FileHash 'Smart Road.lsp').Hash) {
           throw 'Bundled Lisp and repository source differ.'
         }
@@ -83,6 +93,8 @@ runs:
         $null = New-Item (Join-Path $target 'Contents') -ItemType Directory -Force
         Set-Content (Join-Path $target 'PackageContents.xml') '<ApplicationPackage AppVersion="2.1.0"/>'
         $lisp = Join-Path $target 'Contents/Smart Road.lsp'
+        $ribbon = Join-Path $target 'Contents/SmartRoadRibbon.cuix'
+        $ribbonSource = 'SmartRoad.bundle/Contents/SmartRoadRibbon.cuix'
         Set-Content $lisp 'Old copy installed manually'
         $userFile = Join-Path $target 'User notes.txt'
         Set-Content $userFile 'Must survive upgrade and uninstall'
@@ -90,6 +102,7 @@ runs:
           $process = Start-Process $exe -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-' -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw "Installation $attempt failed: $($process.ExitCode)" }
           if ((Get-FileHash $lisp).Hash -ne (Get-FileHash 'Smart Road.lsp').Hash) { throw 'Lisp was not upgraded.' }
+          if ((Get-FileHash $ribbon).Hash -ne (Get-FileHash $ribbonSource).Hash) { throw 'Ribbon was not installed.' }
           [xml]$installed = Get-Content (Join-Path $target 'PackageContents.xml') -Raw
           if ($installed.ApplicationPackage.AppVersion -ne $env:SR_VERSION) { throw 'Installed version is incorrect.' }
           if (-not (Test-Path $userFile)) { throw 'Upgrade removed an unrelated file.' }
@@ -97,6 +110,6 @@ runs:
         $uninstall = @(Get-ChildItem (Join-Path $env:LOCALAPPDATA 'SmartRoad/Uninstall') -Filter 'unins*.exe')
         if ($uninstall.Count -ne 1) { throw 'Expected one registered uninstaller after reinstall.' }
         $process = Start-Process $uninstall[0].FullName -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -Wait -PassThru
-        if ($process.ExitCode -ne 0 -or (Test-Path $lisp) -or -not (Test-Path $userFile)) {
+        if ($process.ExitCode -ne 0 -or (Test-Path $lisp) -or (Test-Path $ribbon) -or -not (Test-Path $userFile)) {
           throw 'Uninstall did not remove the installed files cleanly.'
         }

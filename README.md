@@ -1,4 +1,4 @@
-# Smart Road 2.2 สำหรับ AutoCAD 2016
+# Smart Road 2.3 สำหรับ AutoCAD 2016
 
 รองรับ AutoCAD 2016 รุ่นเต็มบน Windows ใช้ AutoLISP และ Visual LISP/ActiveX โดยโหลดไฟล์ `Smart Road.lsp` ได้โดยตรง
 
@@ -9,11 +9,26 @@
 
 ### ตัวติดตั้ง Windows จาก GitHub Actions
 
-ดาวน์โหลดไฟล์ `Setup.exe` หรือ ZIP จากแท็บ **Releases** เมื่อ push แท็กที่ตรงกับ `AppVersion` ใน manifest เช่น `v2.2.0` workflow **Release Smart Road installer** จะทดสอบบน Windows แล้วแนบไฟล์ทั้งสองไปยัง GitHub Releases โดยตรง
+ดาวน์โหลดไฟล์ `Setup.exe` หรือ ZIP จากแท็บ **Releases** เมื่อ push แท็กที่ตรงกับ `AppVersion` ใน manifest เช่น `v2.3.0` workflow **Release Smart Road installer** จะทดสอบบน Windows แล้วแนบไฟล์ทั้งสองไปยัง GitHub Releases โดยตรง
 
 Workflow **Build Smart Road installer** ตรวจการสร้างและติดตั้งเมื่อ push เข้า `main` หากต้องการแนบไฟล์ผ่าน **Actions → Artifacts** ให้เลือก **Run workflow** แล้วเปิดตัวเลือก **Upload EXE and ZIP to Actions Artifacts if storage is available** การแนบผ่าน Actions จะใช้โควตาพื้นที่ของ GitHub Actions
 
 ปิด AutoCAD ก่อนเปิด Setup ตัวติดตั้งใช้โฟลเดอร์ Bundle เดิมสำหรับบัญชี Windows ปัจจุบันและใช้รายการถอนการติดตั้งเดิมเมื่ออัปเกรดจาก Setup รุ่นก่อน หากพบ Bundle ที่เคยคัดลอกจาก ZIP ก็จะแจ้งก่อนลงทับ ไฟล์อื่นในโฟลเดอร์ที่ตัวติดตั้งไม่ได้จัดการจะยังอยู่ ข้อมูลใน DWG และแม่แบบที่บันทึกในโปรไฟล์ AutoCAD ไม่ต้องย้าย
+
+## แท็บ Smart Road บน Ribbon
+
+เมื่อวาง `SmartRoad.bundle` รุ่นนี้ในโฟลเดอร์ ApplicationPlugins แล้วเปิด AutoCAD 2016 ใหม่ ให้คลิกแท็บ **Smart Road** ที่แถวเดียวกับ **Home** และ **Insert** ตำแหน่งในแถวขึ้นอยู่กับ Workspace และปลั๊กอินอื่นในเครื่อง
+
+| กลุ่มบน Ribbon | คำสั่ง |
+|---|---|
+| **Roads** | Draw Road, Select Centerlines, Road Corridor, Quick Build |
+| **Walk & Transit** | Walkway, Transit |
+| **Junctions** | Junction, Connect Edges |
+| **Edit & Report** | Edit Corridor, Pick Section, Quantities, Smart Road Settings |
+
+ถ้า Ribbon ถูกปิด ให้พิมพ์ `RIBBON` หากยังไม่เห็นแท็บ Smart Road ให้ตรวจเมนู **Show Tabs** จากการคลิกขวาที่ Ribbon หรือใช้ `CUILOAD` เลือก `SmartRoad.bundle/Contents/SmartRoadRibbon.cuix` วิธี `APPLOAD` ต้องโหลดทั้งไฟล์ LSP และไฟล์ CUIX แยกกัน
+
+ไฟล์ CUIX เป็นส่วนเสริมของ Smart Road และใช้ไอคอนของ Smart Road เอง ผู้พัฒนาสร้างใหม่ได้ด้วย `python tools/build_ribbon.py` เมื่อเปลี่ยนปุ่มหรือไอคอน โครงสร้าง CUIX อ้างอิงตัวอย่างของ [Autodesk Developer Network](https://github.com/ADN-DevTech/acad-cuix-builder) ภายใต้ MIT
 
 ## แถบเครื่องมือ Smart Road
 
