@@ -16,7 +16,7 @@ XML_SCHEMA = {
     "xmlns:xsi": "http://www.w3.org/2001/XMLSchema-instance",
 }
 PANELS = {
-    "Roads": ("DROAD", "RNET", "SRROAD", "SRQUICK"),
+    "Roads": ("SRCREATEROAD",),
     "Walk & Transit": ("SRWALK", "SRTRANSIT"),
     "Junctions": ("SRJUNCTION", "SRCONNECT"),
     "Edit & Report": ("SREDIT", "SRSECTION", "SRSTYLE", "SRQUANTITY", "SMARTROAD"),
