@@ -2,6 +2,8 @@
 
 รองรับ AutoCAD 2016 รุ่นเต็มบน Windows ใช้ AutoLISP และ Visual LISP/ActiveX โดยโหลดไฟล์ `Smart Road.lsp` ได้โดยตรง
 
+[แนวทางพัฒนาปลั๊กอินและรายละเอียดทางเทคนิค](docs/DEVELOPMENT.th.md)
+
 ## ติดตั้ง
 
 - ใช้ `APPLOAD` แล้วเลือก `Smart Road.lsp` จากโฟลเดอร์ที่เชื่อถือได้ตามการตั้งค่า `TRUSTEDPATHS`
