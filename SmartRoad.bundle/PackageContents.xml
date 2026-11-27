@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ApplicationPackage SchemaVersion="1.0" Name="Smart Road"
-                    AppVersion="2.4.2" Description="Road and junction tools for AutoCAD 2016"
+                    AppVersion="2.4.3" Description="Road and junction tools for AutoCAD 2016"
                     ProductType="Application">
   <Components>
     <RuntimeRequirements OS="Win32|Win64" Platform="AutoCAD*" SeriesMin="R20.1" SeriesMax="R20.1" />
-    <ComponentEntry AppName="SmartRoad" Version="2.4.2" ModuleName="./Contents/Smart Road.lsp"
+    <ComponentEntry AppName="SmartRoad" Version="2.4.3" ModuleName="./Contents/Smart Road.lsp"
                     LoadOnAutoCADStartup="True" />
-    <ComponentEntry AppName="SmartRoadRibbon" Version="2.4.2"
+    <ComponentEntry AppName="SmartRoadRibbon" Version="2.4.3"
                     ModuleName="./Contents/SmartRoadRibbon.cuix"
                     LoadOnAutoCADStartup="True" />
   </Components>

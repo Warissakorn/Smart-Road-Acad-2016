@@ -17,7 +17,7 @@
   (setq scale (sr:unit-scale))
   (cond
     ((null *droad-unit-scale*)
-     (setq *droad-width* (* 6.0 scale) *droad-fillet* (* 3.0 scale)))
+     (setq *droad-width* (sr:default 'road-width) *droad-fillet* (sr:default 'junction-radius)))
     ((/= scale *droad-unit-scale*)
      (setq ratio (/ scale *droad-unit-scale*)
            *droad-width* (* *droad-width* ratio)
@@ -57,6 +57,15 @@
     )
   )
   (princ)
+)
+
+;; Size the CENTER pattern as 50.8 mm on paper (the acadiso.lin length) at the
+;; default plot scale, whichever .lin defined it and whatever LTSCALE is.
+(defun droad:center-ltscale (/ pattern)
+  (setq pattern (cdr (assoc 40 (tblsearch "LTYPE" "CENTER"))))
+  (if (and pattern (> pattern 0.0) (> (getvar "LTSCALE") 0.0))
+    (/ (* 50.8 0.001 (sr:default-m 'plot-scale) (sr:unit-scale)) pattern (getvar "LTSCALE"))
+    1.0)
 )
 
 ;; --------------------------------------------------------------------------
@@ -126,7 +135,7 @@
     (progn
       (setq p-close (vlax-curve-getClosestPointTo cl-en pt)
             d       (distance pt p-close))
-      (if (< d (- half-w 1e-3))
+      (if (< d (- half-w (sr:tol 1e-3)))
         (if (vlax-curve-isClosed cl-en)
           T
           (progn
@@ -182,7 +191,7 @@
             p-end   (vlax-curve-getEndParam en))
       (foreach pt pts
         (setq pt-on (vlax-curve-getClosestPointTo en pt))
-        (if (<= (distance pt pt-on) 1e-3)
+        (if (<= (distance pt pt-on) (sr:tol 1e-3))
           (progn
             (setq prm (vlax-curve-getParamAtPoint en pt-on))
             (if (and prm
@@ -263,7 +272,7 @@
         (progn
           ;; Check Start Point
           (setq p-s (vlax-curve-getStartPoint cl-en))
-          (if (not (vl-some '(lambda (c) (<= (distance p-s (vlax-curve-getClosestPointTo c p-s)) 1e-3)) old-cls))
+          (if (not (vl-some '(lambda (c) (<= (distance p-s (vlax-curve-getClosestPointTo c p-s)) (sr:tol 1e-3))) old-cls))
             (progn
               (foreach ocl old-cls
                 (setq old-w (droad:get-width-xdata ocl def-w)
@@ -283,7 +292,7 @@
                     (progn
                       (setq hits  (vl-sort (droad:flat-to-pts raw-int) '(lambda (a b) (< (distance p-s a) (distance p-s b))))
                             p-hit (car hits))
-                      (if (> (distance p-s p-hit) 1e-3)
+                      (if (> (distance p-s p-hit) (sr:tol 1e-3))
                         (progn
                           (setq ext-ln (vla-AddLine spc (vlax-3d-point p-hit) (vlax-3d-point p-s))
                                 was-lw (= (cdr (assoc 0 (entget cl-en))) "LWPOLYLINE"))
@@ -302,7 +311,7 @@
           )
           ;; Check End Point
           (setq p-e (vlax-curve-getEndPoint cl-en))
-          (if (not (vl-some '(lambda (c) (<= (distance p-e (vlax-curve-getClosestPointTo c p-e)) 1e-3)) old-cls))
+          (if (not (vl-some '(lambda (c) (<= (distance p-e (vlax-curve-getClosestPointTo c p-e)) (sr:tol 1e-3))) old-cls))
             (progn
               (foreach ocl old-cls
                 (setq old-w (droad:get-width-xdata ocl def-w)
@@ -322,7 +331,7 @@
                     (progn
                       (setq hits  (vl-sort (droad:flat-to-pts raw-int) '(lambda (a b) (< (distance p-e a) (distance p-e b))))
                             p-hit (car hits))
-                      (if (> (distance p-e p-hit) 1e-3)
+                      (if (> (distance p-e p-hit) (sr:tol 1e-3))
                         (progn
                           (setq ext-ln (vla-AddLine spc (vlax-3d-point p-e) (vlax-3d-point p-hit))
                                 was-lw (= (cdr (assoc 0 (entget cl-en))) "LWPOLYLINE"))
@@ -367,6 +376,7 @@
     )
   )
   (vla-put-Layer vla-cl "ROAD-CENTER")
+  (vla-put-LinetypeScale vla-cl (droad:center-ltscale))
   (droad:set-width-xdata cl-en width)
   (setq new-off (append off1 off2))
 
@@ -440,7 +450,7 @@
           )
         )
       )
-      (setq all-int-pts (droad:dedupe-pts all-int-pts 1e-3))
+      (setq all-int-pts (droad:dedupe-pts all-int-pts (sr:tol 1e-3)))
 
       (foreach no new-simple
         (setq split-new (append split-new (droad:split-simple-curve no all-int-pts spc)))
@@ -486,7 +496,7 @@
 (defun droad:matching-ends (first second / p q match)
   (foreach p (list (vlax-curve-getStartPoint first) (vlax-curve-getEndPoint first))
     (foreach q (list (vlax-curve-getStartPoint second) (vlax-curve-getEndPoint second))
-      (if (equal p q 1e-3) (setq match p))
+      (if (equal p q (sr:tol 1e-3)) (setq match p))
     )
   )
   match
@@ -514,7 +524,7 @@
           (if (and (equal (caddr other-a) (caddr other-b) 1e-8)
                    (< (abs cosine) 0.999999)
                    (setq tangent (* radius (sqrt (/ (+ 1.0 cosine) (- 1.0 cosine)))))
-                   (< tangent (- (min (distance corner other-a) (distance corner other-b)) 1e-3)))
+                   (< tangent (- (min (distance corner other-a) (distance corner other-b)) (sr:tol 1e-3))))
             (progn
               (setq last-entity (entlast))
               (vl-cmdf "_.FILLET" (list a (trans pick-a 0 1)) (list b (trans pick-b 0 1)))
@@ -532,7 +542,7 @@
 
 (defun droad:opposite-end (en pt / start)
   (setq start (vlax-curve-getStartPoint en))
-  (if (equal start pt 1e-3) (vlax-curve-getEndPoint en) start)
+  (if (equal start pt (sr:tol 1e-3)) (vlax-curve-getEndPoint en) start)
 )
 
 (defun droad:settings (/ width radius)
@@ -566,6 +576,7 @@
      (princ "\nEnable UNDO (All) before running Smart Road."))
     (T
      (droad:sync-units)
+     (if prompt-settings (sr:warn-unitless))
      (setq doc (vla-get-ActiveDocument (vlax-get-acad-object))
            spc (vla-get-ModelSpace doc)
            vars (mapcar '(lambda (name) (cons name (getvar name)))
@@ -723,6 +734,7 @@
     (princ "\nSwitch to Model space or activate a model viewport.")
     (progn
       (droad:sync-units)
+      (sr:warn-unitless)
       (setq choice (droad:dialog))
       (cond
         ((eq choice 1) (droad:run T nil))
@@ -834,6 +846,39 @@
   (princ)
 )
 
+;; Default dimensions in meters. Read them with sr:default (drawing units)
+;; or sr:default-m (meters) so every command converts through INSUNITS.
+(setq sr:defaults
+  '((road-width . 7.0) (junction-radius . 2.0) (lane-width . 3.5)
+    (crossing-span . 7.0) (crossing-depth . 3.0) (crossing-pitch . 0.75)
+    (island-length . 2.0) (island-width . 1.5)
+    (stop-length . 12.0) (stop-width . 1.5)
+    (platform-length . 30.0) (platform-width . 3.0)
+    (marker-offset . 0.45) (marker-radius . 0.25)
+    (turn-width . 3.25) (turn-length . 20.0) (turn-taper . 15.0)
+    (approach-width . 7.0) (approach-length . 20.0)
+    (roundabout-radius . 14.0) (roundabout-approach . 18.0)
+    (centerline-tolerance . 0.05) (chord-tolerance . 0.005) (sample-step . 0.001)
+    (plot-scale . 1000.0)
+    ;; Stripe width, dash length, gap, clear gap between double stripes.
+    (marking 0.12 3.0 6.0 0.12)))
+
+(defun sr:default-m (key / item)
+  (if (setq item (assoc key sr:defaults))
+    (cdr item)
+    (progn (princ (strcat "\nSmart Road: no default named " (vl-princ-to-string key) ".")) (exit)))
+)
+
+(defun sr:default (key)
+  (* (sr:unit-scale) (sr:default-m key))
+)
+
+;; Tolerances are given in meters; the values match the old literals so
+;; metric drawings behave as before while other units scale with them.
+(defun sr:tol (meters)
+  (* meters (sr:unit-scale))
+)
+
 ;; Editable 2D corridors and plan symbols.
 (setq sr:bands
   '(("Lane" 3.5 7) ("Median" 2.0 2) ("Shoulder" 1.5 8)
@@ -888,6 +933,11 @@
 
 (defun sr:scale-default-profile (profile)
   (sr:scale-profile profile (sr:unit-scale))
+)
+
+(defun sr:default-profile (/ lane)
+  (setq lane (list (list "Lane" (sr:default-m 'lane-width))))
+  (sr:scale-default-profile (list lane lane))
 )
 
 (defun sr:preset (group)
@@ -1105,7 +1155,7 @@
         (if (< start dist finish) (setq breaks (cons dist breaks)))
         (setq param (1+ param)))))
   (setq breaks (vl-sort breaks '<) first (car breaks) stations (list first)
-        tolerance (* 0.005 (sr:unit-scale)))
+        tolerance (sr:default 'chord-tolerance))
   (foreach last (cdr breaks)
     (setq stations (append
       (if (equal kind "LINE") (list last)
@@ -1151,8 +1201,8 @@
 (defun sr:sampled-offset-at (axis station offset / length pt before after a b direction)
   (setq length (sr:length axis)
         pt (vlax-curve-getPointAtDist axis station)
-        before (vlax-curve-getPointAtDist axis (max 0.0 (- station 0.001)))
-        after (vlax-curve-getPointAtDist axis (min length (+ station 0.001)))
+        before (vlax-curve-getPointAtDist axis (max 0.0 (- station (sr:default 'sample-step))))
+        after (vlax-curve-getPointAtDist axis (min length (+ station (sr:default 'sample-step))))
         a (if (equal before pt 1e-10) nil (droad:unit-vec (mapcar '- pt before)))
         b (if (equal after pt 1e-10) nil (droad:unit-vec (mapcar '- after pt))))
   (cond
@@ -1489,8 +1539,7 @@
            prior (entget axis '("SR-CORRIDOR")))
      (if (not (assoc -3 prior))
        (setq prior (append prior (list (list -3 (list "SR-CORRIDOR"))))))
-     (if (= 0 (logand 8 (getvar "UNDOCTL")))
-       (progn (vla-StartUndoMark doc) (setq undo T)))
+     (setq undo (sr:begin-undo doc))
      (regapp "SR-CORRIDOR") (regapp "SR-CORRIDOR-EDGE")
      (sr:render-spans axis spans)
      (if transit
@@ -1520,6 +1569,25 @@
     (progn
       (princ "\nCorridor built. Select the original alignment with SREDIT to modify it.")
       T))
+)
+
+;; Open an undo group unless one is already open. Returns T only when this
+;; call opened it, so the caller knows to close it.
+;; Commands that start from default dimensions say once when the drawing has
+;; no units, because the defaults then assume one drawing unit is one meter.
+(defun sr:warn-unitless ()
+  (if (= 0 (getvar "INSUNITS"))
+    (princ "\nUnitless drawing (INSUNITS = 0): Smart Road treats one drawing unit as one meter. Set INSUNITS to match the drawing."))
+  T
+)
+
+(defun sr:ready-p ()
+  (and (sr:modelspace-p) (sr:warn-unitless))
+)
+
+(defun sr:begin-undo (doc)
+  (if (= 0 (logand 8 (getvar "UNDOCTL")))
+    (progn (vla-StartUndoMark doc) T))
 )
 
 (defun sr:modelspace-p ()
@@ -1708,8 +1776,108 @@
   (sr:shape origin direction (list (list x1 y1) (list x2 y1) (list x2 y2) (list x1 y2)) T layer)
 )
 
-(defun sr:plan (kind / origin point direction length width count step x y corner approach radius stem
-                      opening angle theta index intersection layer half quadrant fill scale fillet u v)
+;; Plan features: sr:plan asks for the insertion frame and dimensions, then a
+;; sr:draw-* function builds the geometry from those values alone.
+
+(defun sr:draw-crosswalk (origin direction width length count / step layer fill x)
+  (setq step (/ width count)
+        layer (sr:layer "SR-CROSSWALK" 7)
+        fill (sr:style-layer "SR-MARK-CROSSWALK" '(248 247 240))
+        x 0.0)
+  (repeat count
+    (sr:box origin direction x (- (/ length 2.0)) (+ x (* step 0.55)) (/ length 2.0) layer)
+    (sr:style-solid
+      (list (sr:local origin direction x (- (/ length 2.0)))
+            (sr:local origin direction (+ x (* step 0.55)) (- (/ length 2.0)))
+            (sr:local origin direction (+ x (* step 0.55)) (/ length 2.0))
+            (sr:local origin direction x (/ length 2.0)))
+      fill)
+    (setq x (+ x step)))
+)
+
+(defun sr:draw-pad (kind origin direction length width / half layer corner)
+  (setq half (/ width 2.0)
+        layer (sr:layer (strcat "SR-" (strcase kind))
+                  (if (member kind '("Stop" "Platform")) 5 3)))
+  (cond
+    ((equal kind "Island")
+     (setq corner (min half (* length 0.25)))
+     (sr:shape origin direction
+       (list '(0.0 0.0) (list corner (- half)) (list (- length corner) (- half))
+             (list length 0.0) (list (- length corner) half) (list corner half))
+       T layer))
+    (T
+     (sr:box origin direction 0.0 (- half) length half layer)
+     (if (equal kind "Ramp")
+       (progn
+         (sr:shape origin direction (list (list 0.0 (- half)) (list length half)) nil layer)
+         (sr:shape origin direction (list (list 0.0 half) (list length (- half))) nil layer)))
+     (if (equal kind "Stop")
+       (sr:circle (sr:local origin direction 0.0 (+ half (sr:default 'marker-offset))) (sr:default 'marker-radius) layer))))
+)
+
+;; WIDTH is negative to widen to the right.
+(defun sr:draw-turn-lane (origin direction width length approach / layer)
+  (setq layer (sr:layer "SR-TURN-LANE" 2))
+  (sr:shape origin direction
+    (list '(0.0 0.0) (list approach width) (list (+ approach length) width)) nil layer)
+  (sr:shape origin direction (list '(0.0 0.0) (list (+ approach length) 0.0)) nil layer)
+)
+
+(defun sr:draw-junction (kind origin direction width approach corner / half stem layer u v fillet)
+  (setq half (/ width 2.0)
+        stem (+ half approach)
+        layer (sr:layer "SR-JUNCTION" 2))
+  (foreach quadrant '((1 1) (-1 1) (-1 -1) (1 -1))
+    (if (or (equal kind "Cross") (= 1 (cadr quadrant)))
+      (if (> corner 0.0)
+        (progn
+          (setq u (sr:local '(0.0 0.0 0.0) direction (car quadrant) 0.0)
+                v (sr:local '(0.0 0.0 0.0) direction 0.0 (cadr quadrant))
+                fillet (srj:fillet
+                  (sr:local origin direction (* half (car quadrant)) (* half (cadr quadrant)))
+                  u v corner))
+          (sr:plan-geometry 'sr:poly
+            (list (list (sr:local origin direction (* stem (car quadrant)) (* half (cadr quadrant)))
+                        (car fillet)) nil layer))
+          (sr:plan-geometry 'sr:poly
+            (list (list (cadr fillet)
+                        (sr:local origin direction (* half (car quadrant)) (* stem (cadr quadrant))))
+                  nil layer))
+          (sr:plan-geometry 'sr:arc
+            (list (caddr fillet) corner (cadddr fillet) (nth 4 fillet) layer)))
+        (sr:shape origin direction
+          (mapcar '(lambda (pt) (mapcar '* pt quadrant))
+            (list (list stem half) (list half half) (list half stem)))
+          nil layer))))
+  (if (equal kind "Tee")
+    (sr:shape origin direction (list (list (- stem) (- half)) (list stem (- half))) nil layer))
+)
+
+(defun sr:roundabout-fits-p (radius width opening)
+  (and (< width radius) (< opening (* radius (sqrt 2.0))))
+)
+
+(defun sr:draw-roundabout (origin direction radius width opening approach
+                           / layer angle half intersection theta index stem)
+  (setq layer (sr:layer "SR-ROUNDABOUT" 2)
+        angle (atan (cadr direction) (car direction))
+        half (* 0.5 opening)
+        intersection (sqrt (- (* radius radius) (* half half)))
+        theta (atan half intersection)
+        index 0)
+  (sr:plan-geometry 'sr:circle (list origin (- radius width) layer))
+  (repeat 4
+    (setq stem (+ angle (* index (/ pi 2.0))))
+    (sr:plan-geometry 'sr:arc (list origin radius (rem (+ stem theta (* 2.0 pi)) (* 2.0 pi))
+            (rem (+ stem (/ pi 2.0) (- theta) (* 2.0 pi)) (* 2.0 pi)) layer))
+    (foreach y (list half (- half))
+      (sr:shape origin (list (cos stem) (sin stem) 0.0)
+        (list (list intersection y) (list (+ radius approach) y)) nil layer))
+    (setq index (1+ index)))
+)
+
+(defun sr:plan (kind / origin point direction length width count approach radius opening corner scale)
   (if (and (setq origin (getpoint "\nFeature insertion point: "))
            (setq point (getpoint origin "\nPick feature direction: ")))
     (progn
@@ -1724,120 +1892,47 @@
            (if (= 0 (getvar "FILLMODE"))
              (progn (princ "\nSet FILLMODE to 1 and REGEN before painting.") (exit)))
            (setq scale (sr:unit-scale)
-                 width (sr:number "Crossing span across the road" (* scale 7.0) nil)
-                 length (sr:number "Crossing depth along the road" (* scale 3.0) nil)
-                 count (fix (/ width (* scale 0.75))))
+                 width (sr:number "Crossing span across the road" (sr:default 'crossing-span) nil)
+                 length (sr:number "Crossing depth along the road" (sr:default 'crossing-depth) nil)
+                 count (fix (/ width (sr:default 'crossing-pitch))))
            (if (or (= 0 (getvar "INSUNITS")) (< count 1) (> count 200))
              (progn
                (princ (strcat "\nCheck crossing dimensions and drawing units. Span "
                               (rtos (/ width scale) 2 3) " m, depth " (rtos (/ length scale) 2 3) " m."))
                (initget "Yes No")
                (if (not (equal "Yes" (getkword "\nKeep these dimensions [Yes/No] <No>: "))) (exit))))
-           (setq count (max 1 (min 200 count))
-                 step (/ width count)
-                 layer (sr:layer "SR-CROSSWALK" 7)
-                 fill (sr:style-layer "SR-MARK-CROSSWALK" '(248 247 240))
-                 x 0.0)
-           (repeat count
-             (sr:box origin direction x (- (/ length 2.0)) (+ x (* step 0.55)) (/ length 2.0) layer)
-             (sr:style-solid
-               (list (sr:local origin direction x (- (/ length 2.0)))
-                     (sr:local origin direction (+ x (* step 0.55)) (- (/ length 2.0)))
-                     (sr:local origin direction (+ x (* step 0.55)) (/ length 2.0))
-                     (sr:local origin direction x (/ length 2.0)))
-               fill)
-             (setq x (+ x step))))
+           (sr:draw-crosswalk origin direction width length (max 1 (min 200 count))))
           ((member kind '("Island" "Ramp" "Stop" "Platform"))
-           (setq scale (sr:unit-scale)
-                 length (sr:number "Feature length"
-                           (* scale (cond ((equal kind "Platform") 30.0) ((equal kind "Stop") 12.0) (T 2.0))) nil)
-                 width (sr:number "Feature width" (* scale (if (equal kind "Platform") 3.0 1.5)) nil)
-                 half (/ width 2.0)
-                 layer (sr:layer (strcat "SR-" (strcase kind))
-                           (if (member kind '("Stop" "Platform")) 5 3)))
-           (cond
-             ((equal kind "Island")
-              (setq corner (min half (* length 0.25)))
-              (sr:shape origin direction
-                (list '(0.0 0.0) (list corner (- half)) (list (- length corner) (- half))
-                      (list length 0.0) (list (- length corner) half) (list corner half))
-                T layer))
-             (T
-              (sr:box origin direction 0.0 (- half) length half layer)
-              (if (equal kind "Ramp")
-                (progn
-                  (sr:shape origin direction (list (list 0.0 (- half)) (list length half)) nil layer)
-                  (sr:shape origin direction (list (list 0.0 half) (list length (- half))) nil layer)))
-              (if (equal kind "Stop")
-                (sr:circle (sr:local origin direction 0.0 (+ half (* scale 0.45))) (* scale 0.25) layer)))))
+           (setq length (sr:number "Feature length"
+                           (sr:default (cond ((equal kind "Platform") 'platform-length)
+                                             ((equal kind "Stop") 'stop-length)
+                                             (T 'island-length))) nil)
+                 width (sr:number "Feature width"
+                         (sr:default (cond ((equal kind "Platform") 'platform-width)
+                                           ((equal kind "Stop") 'stop-width)
+                                           (T 'island-width))) nil))
+           (sr:draw-pad kind origin direction length width))
           ((equal kind "TurnLane")
-           (setq scale (sr:unit-scale)
-                 width (sr:number "Turn lane width" (* scale 3.25) nil)
-                 length (sr:number "Full width length" (* scale 20.0) nil)
-                 approach (sr:number "Entry taper length" (* scale 15.0) nil)
-                 layer (sr:layer "SR-TURN-LANE" 2))
+           (setq width (sr:number "Turn lane width" (sr:default 'turn-width) nil)
+                 length (sr:number "Full width length" (sr:default 'turn-length) nil)
+                 approach (sr:number "Entry taper length" (sr:default 'turn-taper) nil))
            (initget "Left Right")
            (if (not (equal "Left" (getkword "\nWiden to [Left/Right] <Right>: "))) (setq width (- width)))
-           (sr:shape origin direction
-             (list '(0.0 0.0) (list approach width) (list (+ approach length) width)) nil layer)
-           (sr:shape origin direction (list '(0.0 0.0) (list (+ approach length) 0.0)) nil layer))
+           (sr:draw-turn-lane origin direction width length approach))
           ((member kind '("Tee" "Cross"))
-           (setq scale (sr:unit-scale)
-                 width (sr:number "Approach width" (* scale 7.0) nil)
-                 half (/ width 2.0)
-                 approach (sr:number "Approach length beyond intersection" (* scale 20.0) nil)
-                 corner (sr:number "Corner radius" (* scale 2.0) T)
-                 stem (+ half approach)
-                 layer (sr:layer "SR-JUNCTION" 2))
+           (setq width (sr:number "Approach width" (sr:default 'approach-width) nil)
+                 approach (sr:number "Approach length beyond intersection" (sr:default 'approach-length) nil)
+                 corner (sr:number "Corner radius" (sr:default 'junction-radius) T))
            (if (>= corner approach)
              (progn (princ "\nCorner radius must be less than the approach length.") (exit)))
-           (foreach quadrant '((1 1) (-1 1) (-1 -1) (1 -1))
-             (if (or (equal kind "Cross") (= 1 (cadr quadrant)))
-               (if (> corner 0.0)
-                 (progn
-                   (setq u (sr:local '(0.0 0.0 0.0) direction (car quadrant) 0.0)
-                         v (sr:local '(0.0 0.0 0.0) direction 0.0 (cadr quadrant))
-                         fillet (srj:fillet
-                           (sr:local origin direction (* half (car quadrant)) (* half (cadr quadrant)))
-                           u v corner))
-                   (sr:plan-geometry 'sr:poly
-                     (list (list (sr:local origin direction (* stem (car quadrant)) (* half (cadr quadrant)))
-                                 (car fillet)) nil layer))
-                   (sr:plan-geometry 'sr:poly
-                     (list (list (cadr fillet)
-                                 (sr:local origin direction (* half (car quadrant)) (* stem (cadr quadrant))))
-                           nil layer))
-                   (sr:plan-geometry 'sr:arc
-                     (list (caddr fillet) corner (cadddr fillet) (nth 4 fillet) layer)))
-                 (sr:shape origin direction
-                   (mapcar '(lambda (pt) (mapcar '* pt quadrant))
-                     (list (list stem half) (list half half) (list half stem)))
-                   nil layer))))
-           (if (equal kind "Tee")
-             (sr:shape origin direction (list (list (- stem) (- half)) (list stem (- half))) nil layer)))
+           (sr:draw-junction kind origin direction width approach corner))
           ((equal kind "Roundabout")
-           (setq scale (sr:unit-scale)
-                 radius (sr:number "Outer radius" (* scale 14.0) nil)
+           (setq radius (sr:number "Outer radius" (sr:default 'roundabout-radius) nil)
                  width (sr:number "Circulating width" (* radius 0.45) nil)
-                 opening (sr:number "Approach width" (min (* scale 7.0) radius) nil)
-                 approach (sr:number "Approach length beyond circle" (* scale 18.0) nil))
-           (if (and (< width radius) (< opening (* radius (sqrt 2.0))))
-             (progn
-               (setq layer (sr:layer "SR-ROUNDABOUT" 2)
-                     angle (atan (cadr direction) (car direction))
-                     half (* 0.5 opening)
-                     intersection (sqrt (- (* radius radius) (* half half)))
-                     theta (atan half intersection)
-                     index 0)
-               (sr:plan-geometry 'sr:circle (list origin (- radius width) layer))
-               (repeat 4
-                 (setq stem (+ angle (* index (/ pi 2.0))))
-                 (sr:plan-geometry 'sr:arc (list origin radius (rem (+ stem theta (* 2.0 pi)) (* 2.0 pi))
-                         (rem (+ stem (/ pi 2.0) (- theta) (* 2.0 pi)) (* 2.0 pi)) layer))
-                 (foreach y (list half (- half))
-                   (sr:shape origin (list (cos stem) (sin stem) 0.0)
-                     (list (list intersection y) (list (+ radius approach) y)) nil layer))
-                 (setq index (1+ index))))
+                 opening (sr:number "Approach width" (min (sr:default 'approach-width) radius) nil)
+                 approach (sr:number "Approach length beyond circle" (sr:default 'roundabout-approach) nil))
+           (if (sr:roundabout-fits-p radius width opening)
+             (sr:draw-roundabout origin direction radius width opening approach)
              (princ "\nUse a circulating width smaller than the radius and narrower approaches.")))))
         (princ "\nPick two distinct plan points."))))
   (princ)
@@ -1880,12 +1975,12 @@
 )
 
 (defun c:SRROAD ()
-  (if (sr:modelspace-p) (sr:create "Road"))
+  (if (sr:ready-p) (sr:create "Road"))
   (princ)
 )
 
 (defun c:SRWALK (/ option)
-  (if (sr:modelspace-p)
+  (if (sr:ready-p)
     (progn
       (initget "Walkway Crosswalk Island Ramp")
       (setq option (getkword "\nPedestrian [Walkway/Crosswalk/Island/Ramp] <Walkway>: "))
@@ -1901,7 +1996,7 @@
 )
 
 (defun sr:alignment-direction (axis station / step before after)
-  (setq step (* 0.001 (sr:unit-scale))
+  (setq step (sr:default 'sample-step)
         before (vlax-curve-getPointAtDist axis (max 0.0 (- station step)))
         after (vlax-curve-getPointAtDist axis (min (sr:length axis) (+ station step))))
   (droad:unit-vec (mapcar '- after before))
@@ -1941,8 +2036,8 @@
         half (* 0.5 (nth 4 values))
         entity (if (equal kind "Pole")
                  (sr:circle (sr:local center direction (- (* 0.5 (cadddr values)))
-                              (* (cadr values) (+ half (* 0.45 (sr:unit-scale)))))
-                            (* 0.25 (sr:unit-scale)) layer)
+                              (* (cadr values) (+ half (sr:default 'marker-offset))))
+                            (sr:default 'marker-radius) layer)
                  (sr:box center direction (- (* 0.5 (cadddr values))) (- half)
                          (* 0.5 (cadddr values)) half layer)))
   (if (not (and entity (entmod (append (entget entity) (list (list -3 (cons "SR-TRANSIT-ANCHOR" data)))))))
@@ -1970,8 +2065,8 @@
         (setq side (getkword "\nSide of alignment [Left/Right] <Right>: ")
               sign (if (equal side "Left") 1.0 -1.0)
               gap (sr:number "Clearance from corridor edge (drawing units)" 0.0 T)
-              length (sr:number "Feature length" (* (sr:unit-scale) (if (equal kind "Stop") 12.0 30.0)) nil)
-              width (sr:number "Feature width" (* (sr:unit-scale) (if (equal kind "Stop") 1.5 3.0)) nil)
+              length (sr:number "Feature length" (sr:default (if (equal kind "Stop") 'stop-length 'platform-length)) nil)
+              width (sr:number "Feature width" (sr:default (if (equal kind "Stop") 'stop-width 'platform-width)) nil)
               values (list station sign gap length width)
               data (append (list (cons 1005 (cdr (assoc 5 (entget axis)))) (cons 1000 kind))
                            (mapcar '(lambda (value) (cons 1040 (float value))) values))
@@ -1988,8 +2083,7 @@
             (if (equal "Build" (getkword "\nLinked feature preview [Build/Cancel] <Cancel>: "))
               (progn
                 (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
-                (if (= 0 (logand 8 (getvar "UNDOCTL")))
-                  (progn (vla-StartUndoMark doc) (setq undo T)))
+                (setq undo (sr:begin-undo doc))
                 (regapp "SR-TRANSIT-ANCHOR")
                 (setq layer (sr:layer (strcat "SR-" (strcase kind)) 5))
                 (sr:write-transit axis spans data layer)
@@ -2005,7 +2099,7 @@
 )
 
 (defun c:SRTRANSIT (/ option)
-  (if (sr:modelspace-p)
+  (if (sr:ready-p)
     (progn
       (initget "Corridor LinkedStop LinkedPlatform Stop Platform")
       (setq option (getkword "\nTransit [Corridor/LinkedStop/LinkedPlatform/Stop/Platform] <Corridor>: "))
@@ -2037,7 +2131,7 @@
       ;; Sample only the picked side so a vertex at the junction gives that segment's direction.
       (setq forward (> pick at)
             reach (if forward (- (sr:length axis) at) at)
-            step (min (* 0.001 (sr:unit-scale)) reach)
+            step (min (sr:default 'sample-step) reach)
             ahead (vlax-curve-getPointAtDist axis (if forward (+ at step) (- at step)))
             direction (droad:unit-vec (mapcar '- ahead position))
             model (sr:model axis))
@@ -2047,7 +2141,7 @@
               b (sr:side-width profile 1))
         (progn
           (setq width (sr:number "Arm width (drawing units)"
-                         (droad:get-width-xdata axis (* 7.0 (sr:unit-scale))) nil)
+                         (droad:get-width-xdata axis (sr:default 'road-width)) nil)
                 a (* 0.5 width) b a)))
       ;; Left and right widths follow the station direction; swap them for an arm running backwards.
       (if (not forward)
@@ -2068,7 +2162,7 @@
   (cond
     ((<= gap 1e-6) nil)
     ((>= gap (- pi 1e-7))
-     (list (if (equal a b 1e-8) (list far-a a far-b) (list far-a a b far-b)) nil nil))
+     (list (if (equal a b (sr:tol 1e-8)) (list far-a a far-b) (list far-a a b far-b)) nil nil))
     ((setq corner (srj:intersection a far-a b far-b))
      (if (> radius 0.0)
        (setq fillet (srj:fillet corner u v radius)))
@@ -2117,12 +2211,12 @@
       (setq origin (trans origin 1 0))
       (initget "Three Four")
       (setq count (if (equal "Four" (getkword "\nNumber of arms [Three/Four] <Three>: ")) 4 3)
-            tolerance (sr:number "Centerline tolerance (drawing units)" (* 0.05 (sr:unit-scale)) T))
+            tolerance (sr:number "Centerline tolerance (drawing units)" (sr:default 'centerline-tolerance) T))
       (repeat count
         (if (setq arm (srj:road-arm origin tolerance))
           (setq arms (cons arm arms))
           (exit)))
-      (setq radius (sr:number "Corner radius (drawing units)" (* 2.0 (sr:unit-scale)) T))
+      (setq radius (sr:number "Corner radius (drawing units)" (sr:default 'junction-radius) T))
       (if (setq plan (srj:road-layout origin arms radius))
         (foreach item plan
           (sr:plan-geometry 'sr:poly (list (car item) nil "SR-JUNCTION"))
@@ -2132,7 +2226,7 @@
         (princ "\nThe arms overlap, coincide or are too short for this radius. Check the picks and widths."))))
 )
 (defun c:SRJUNCTION (/ option)
-  (if (sr:modelspace-p)
+  (if (sr:ready-p)
     (progn
       (initget "FromRoads Tee Cross Roundabout TurnLane")
       (setq option (getkword "\nJunction [FromRoads/Tee/Cross/Roundabout/TurnLane] <Cross>: "))
@@ -2446,10 +2540,7 @@ Unlock layer " locked " before using Quick Build."))
      nil)
     (T
      (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
-     (if (= 0 (logand 8 (getvar "UNDOCTL")))
-       (progn
-         (vla-StartUndoMark doc)
-         (setq undo-open T)))
+     (setq undo-open (sr:begin-undo doc))
      (setq writing T)
      (regapp "SR-CORRIDOR")
      (regapp "SR-CORRIDOR-EDGE")
@@ -2473,7 +2564,7 @@ Could not save the corridor data on alignment "
 )
 
 (defun c:SRQUICK (/ filter selection axes profile default-profile skipped)
-  (if (sr:modelspace-p)
+  (if (sr:ready-p)
     (progn
       (setq filter '((0 . "LINE,ARC,LWPOLYLINE") (410 . "Model"))
             selection (ssget "_I" filter))
@@ -2493,9 +2584,10 @@ Could not save the corridor data on alignment "
               (setq profile (sr:quick-profile))
               (if (not profile)
                 (progn
-                  (setq profile (sr:scale-default-profile '((("Lane" 3.5)) (("Lane" 3.5))))
+                  (setq profile (sr:default-profile)
                         default-profile T)
-                  (princ "\nUsing the default profile: one 3.5-meter lane per side, converted to drawing units.")))
+                  (princ (strcat "\nUsing the default profile: one " (rtos (sr:default-m 'lane-width) 2 2)
+                                 "-meter lane per side, converted to drawing units."))))
               (if (sr:quick-build axes profile nil nil)
                 (progn
                   (if default-profile (sr:remember-quick-profile profile))
@@ -2511,8 +2603,9 @@ Could not save the corridor data on alignment "
 )
 
 (defun c:SRPROFILE (/ profile saved)
+  (sr:warn-unitless)
   (setq profile (sr:quick-profile))
-  (if (not profile) (setq profile (sr:scale-default-profile '((("Lane" 3.5)) (("Lane" 3.5))))))
+  (if (not profile) (setq profile (sr:default-profile)))
   (setq profile (sr:configure-profile profile))
   (if profile
     (progn
@@ -2613,7 +2706,7 @@ Could not save the corridor data on alignment "
 )
 
 (defun c:SRSECTION (/ axis model range regions overlapping prior profile taper updated choice retained)
-  (if (and (sr:modelspace-p) (setq axis (sr:pick-corridor)))
+  (if (and (sr:ready-p) (setq axis (sr:pick-corridor)))
     (progn
       (setq model (sr:model axis))
       (cond
@@ -3082,8 +3175,7 @@ Could not save the corridor data on alignment "
   (if (not (vl-every 'sr:writable-p appearance))
     (progn (princ "\nUnlock the road fill and marking layers first.") (exit)))
   (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
-  (if (= 0 (logand 8 (getvar "UNDOCTL")))
-    (progn (vla-StartUndoMark doc) (setq undo T)))
+  (setq undo (sr:begin-undo doc))
   (if (or (nth 4 first) (nth 4 second))
     (if (and (not (tblsearch "APPID" "SR-JUNCTION-EDIT")) (not (regapp "SR-JUNCTION-EDIT")))
       (progn (princ "\nUnable to register the corridor junction marker.") (exit))))
@@ -3197,11 +3289,11 @@ Could not save the corridor data on alignment "
     (* 0.5 (max 0.0 (+ x y))))
 )
 
-(defun sr:outline-simple-p (points / first previous edges i a b x y pending other end ok)
+(defun sr:outline-simple-p (points / first previous edges i a b x y pending other end ok tolerance)
   ;; Sort by the left edge of each segment so distant pairs are skipped.
-  (setq first (car points) previous first i 0 ok T)
+  (setq first (car points) previous first i 0 ok T tolerance (sr:tol 1e-8))
   (foreach b (append (cdr points) (list first))
-    (if (not (equal previous b 1e-8))
+    (if (not (equal previous b tolerance))
       (setq edges (cons (list (min (car previous) (car b)) i previous b) edges)
             i (1+ i)))
     (setq previous b))
@@ -3243,9 +3335,10 @@ Could not save the corridor data on alignment "
     stations)
 )
 
-(defun sr:points-match-p (expected actual)
+(defun sr:points-match-p (expected actual / tolerance)
+  (setq tolerance (sr:tol 1e-6))
   (and (= (length expected) (length actual))
-       (vl-every '(lambda (a b) (equal a b 1e-6)) expected actual))
+       (vl-every '(lambda (a b) (equal a b tolerance)) expected actual))
 )
 
 (defun sr:legacy-stations (axis start finish / kind param distance step stations)
@@ -3722,7 +3815,14 @@ Could not save the corridor data on alignment "
     (setq dimensions (cddr (sr:extent (cdadr (assoc -3 (entget entity '("SR-ROAD-STYLE"))))))))
   (if (and (= 4 (length dimensions)) (vl-every '(lambda (value) (> value 0.0)) dimensions))
     dimensions
-    '(0.12 3.0 6.0 0.12))
+    (sr:default-m 'marking))
+)
+
+(defun sr:prompt-marking-dimensions (dimensions)
+  (list (sr:style-dimension-input "Stripe width" (car dimensions))
+        (sr:style-dimension-input "Dash length" (cadr dimensions))
+        (sr:style-dimension-input "Gap between dashes" (caddr dimensions))
+        (sr:style-dimension-input "Clear gap between double stripes" (cadddr dimensions)))
 )
 
 (defun sr:style-dimension-input (label current / value)
@@ -3746,8 +3846,7 @@ Could not save the corridor data on alignment "
      (princ "\nAppearance needs complete corridor boundaries. Rebuild or repair the affected edges first."))
     (T
      (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
-     (if (= 0 (logand 8 (getvar "UNDOCTL")))
-       (progn (vla-StartUndoMark doc) (setq undo T)))
+     (setq undo (sr:begin-undo doc))
      (if scheme (sr:style-render axis paintable owner scheme dimensions))
      (foreach entity old
        (if (entdel entity) (setq erased (cons entity erased)) (exit)))
@@ -3769,7 +3868,7 @@ Could not save the corridor data on alignment "
 )
 
 (defun c:SRSTYLE (/ axis model mode current dimensions)
-  (if (and (sr:modelspace-p)
+  (if (and (sr:ready-p)
            (or (= 0 (logand 2 (getvar "UNDOCTL")))
                (progn (princ "\nEnable UNDO (All) first.") nil))
            (setq axis (sr:pick-corridor)))
@@ -3785,15 +3884,10 @@ Could not save the corridor data on alignment "
           (progn
             (if (null mode) (setq mode (if current (sr:style-scheme current) "YellowDash")))
             (setq dimensions (sr:style-dimensions current))
-            (if (= 0 (getvar "INSUNITS"))
-              (princ "\nINSUNITS is unitless. Markings assume 1 drawing unit = 1 meter."))
             (initget "Keep Set")
             (if (equal "Set" (getkword "\nMarking dimensions [Keep/Set] <Keep>: "))
               (setq dimensions
-                (list (sr:style-dimension-input "Stripe width" (car dimensions))
-                      (sr:style-dimension-input "Dash length" (cadr dimensions))
-                      (sr:style-dimension-input "Gap between dashes" (caddr dimensions))
-                      (sr:style-dimension-input "Clear gap between double stripes" (cadddr dimensions)))))
+                (sr:prompt-marking-dimensions dimensions)))
             (sr:style-change axis model mode dimensions))))
       (princ "\nSelect the source alignment of a Smart Road corridor.")))
   (princ)
@@ -3887,10 +3981,8 @@ Could not save the corridor data on alignment "
     (if (and msg (not (wcmatch (strcase msg) "*CANCEL*,*QUIT*,*BREAK*")))
       (princ (strcat "\nCreate Road: " msg)))
     (princ))
-  (if (and (sr:modelspace-p) (= 0 (logand 2 (getvar "UNDOCTL"))))
+  (if (and (sr:ready-p) (= 0 (logand 2 (getvar "UNDOCTL"))))
     (progn
-      (if (= 0 (getvar "INSUNITS"))
-        (princ "\nUnitless drawing: default dimensions assume one drawing unit is one meter."))
       (setq filter '((0 . "LINE,ARC,LWPOLYLINE") (410 . "Model")))
       (if (not (equal mode "Draw")) (setq selection (ssget "_I" filter)))
       (if (setq profile (sr:create-road-profile mode))
@@ -3914,10 +4006,7 @@ Could not save the corridor data on alignment "
                   (initget "Default Set")
                   (if (equal "Set" (getkword "\nMarking dimensions [Default/Set] <Default>: "))
                     (setq dimensions
-                      (list (sr:style-dimension-input "Stripe width" (car dimensions))
-                            (sr:style-dimension-input "Dash length" (cadr dimensions))
-                            (sr:style-dimension-input "Gap between dashes" (caddr dimensions))
-                            (sr:style-dimension-input "Clear gap between double stripes" (cadddr dimensions)))))))
+                      (sr:prompt-marking-dimensions dimensions)))))
               (if (equal mode "Draw") (setq points (sr:road-sketch profile scheme dimensions)))
               (if (or points axes)
                 (progn
@@ -3941,8 +4030,7 @@ Could not save the corridor data on alignment "
                       (if points
                         (progn
                           (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
-                          (if (= 0 (logand 8 (getvar "UNDOCTL")))
-                            (progn (vla-StartUndoMark doc) (setq undo T)))
+                          (setq undo (sr:begin-undo doc))
                           (setq new-axis (sr:poly points nil (getvar "CLAYER"))
                                 axes (list new-axis))))
                       (setq built (sr:quick-build axes profile scheme dimensions))
