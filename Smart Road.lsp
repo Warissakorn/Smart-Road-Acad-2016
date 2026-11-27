@@ -1254,16 +1254,29 @@
   (vlax-curve-getDistAtParam axis (vlax-curve-getEndParam axis))
 )
 
-;; Each entry gives the unit symbol, UI name, and units per meter.
+;; Unit symbol, UI name, units per meter, and optional command keyword.
 (setq sr:units
   '(("m" "Meters" 1.0)
     ("mm" "Millimeters" 1000.0)
     ("cm" "Centimeters" 100.0)
+    ("dm" "Decimeters" 10.0)
+    ("dam" "Decameters" 0.1)
+    ("hm" "Hectometers" 0.01)
     ("km" "Kilometers" 0.001)
+    ("Gm" "Gigameters" 1.0e-9)
     ("in" "Inches" 39.37007874015748)
     ("ft" "Feet" 3.280839895013123)
+    ("ft-us" "US Survey Feet" 3.280833333333333 "SurveyFeet")
     ("yd" "Yards" 1.093613298337708)
-    ("ft-us" "SurveyFeet" 3.280833333333333)))
+    ("mi" "Miles" 0.000621371192237334)
+    ("mil" "Mils" 39370.07874015748)
+    ("uin" "Microinches" 39370078.74015748)
+    ("um" "Micrometers" 1.0e6)
+    ("nm" "Nanometers" 1.0e9)
+    ("angstrom" "Angstroms" 1.0e10)
+    ("au" "Astronomical Units" 6.684587122268445e-12 "AstronomicalUnits")
+    ("ly" "Light Years" 1.0570008340246154e-16 "LightYears")
+    ("pc" "Parsecs" 3.240779289444365e-17)))
 
 (defun sr:unit-factor (unit)
   (if (eq (type unit) 'STR) (caddr (assoc unit sr:units)))
@@ -1327,15 +1340,18 @@
   (/ value (sr:unit-factor (sr:display-unit)))
 )
 
-(defun sr:unit-keyword (label default / item keyword)
-  (initget "Meters Millimeters Centimeters Kilometers Inches Feet Yards SurveyFeet")
-  (setq item (assoc default sr:units)
-        keyword (getkword (strcat "\n" label
-                  " [Meters/Millimeters/Centimeters/Kilometers/Inches/Feet/Yards/SurveyFeet]"
-                  (if item (strcat " <" (cadr item) ">") "") ": ")))
-  (if keyword
-    (car (vl-some '(lambda (entry) (if (equal keyword (cadr entry)) entry)) sr:units))
-    default)
+(defun sr:unit-keyword (label default / entry keyword keywords choices codes)
+  (setq keywords "" choices "")
+  (foreach entry sr:units
+    (setq keyword (or (cadddr entry) (cadr entry))
+          keywords (strcat keywords (if codes " " "") keyword)
+          choices (strcat choices (if codes "/" "") keyword)
+          codes (cons (cons keyword (car entry)) codes)))
+  (initget keywords)
+  (setq entry (assoc default sr:units)
+        keyword (getkword (strcat "\n" label " [" choices "]"
+                                  (if entry (strcat " <" (cadr entry) ">") "") ": ")))
+  (if keyword (cdr (assoc keyword codes)) default)
 )
 
 (defun sr:ensure-units (/ presets geometry)
@@ -2767,7 +2783,8 @@
      (if (setenv "SmartRoad_Units" (vl-prin1-to-string (list sr:ui-geometry sr:ui-display)))
        (progn
          (setq pairs (sr:settings-ui-differences 'sr:builtin-m))
-         (sr:write-user-settings pairs)
+         (if (not (equal pairs (sr:read-user-settings) 1e-9))
+           (sr:write-user-settings pairs))
          (set_tile "status" "Saved unit presets and default dimensions for new drawings."))
        (set_tile "status" "Could not save your unit presets.")))
     ((and (sr:settings-confirm-geometry-p) (not (equal (get_tile "confirm_geometry") "1")))
@@ -2776,7 +2793,8 @@
      (set_tile "status" "Could not save the units in this drawing."))
     (T
      (setq pairs (sr:settings-ui-differences 'sr:inherited-m))
-     (sr:write-drawing-settings pairs)
+     (if (not (equal pairs (sr:read-drawing-settings) 1e-9))
+       (sr:write-drawing-settings pairs))
      (set_tile "confirm_geometry" "0")
      (set_tile "status" (strcat "This drawing keeps its units and " (itoa (length pairs)) " dimension override(s)."))))
   (sr:settings-ui-refresh sr:ui-index)
