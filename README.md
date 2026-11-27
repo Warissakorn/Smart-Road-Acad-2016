@@ -11,7 +11,7 @@
 
 ### ตัวติดตั้ง Windows จาก GitHub Actions
 
-ดาวน์โหลดไฟล์ `Setup.exe` หรือ ZIP จากแท็บ **Releases** เมื่อ push แท็กที่ตรงกับ `AppVersion` ใน manifest เช่น `v2.4.1` workflow **Release Smart Road installer** จะทดสอบบน Windows แล้วแนบไฟล์ทั้งสองไปยัง GitHub Releases โดยตรง
+ดาวน์โหลดไฟล์ `Setup.exe` หรือ ZIP จากแท็บ **Releases** เมื่อ push แท็กที่ตรงกับ `AppVersion` ใน manifest เช่น `v2.4.2` workflow **Release Smart Road installer** จะทดสอบบน Windows แล้วแนบไฟล์ทั้งสองไปยัง GitHub Releases โดยตรง
 
 Workflow **Build Smart Road installer** ตรวจการสร้างและติดตั้งเมื่อ push เข้า `main` หากต้องการแนบไฟล์ผ่าน **Actions → Artifacts** ให้เลือก **Run workflow** แล้วเปิดตัวเลือก **Upload EXE and ZIP to Actions Artifacts if storage is available** การแนบผ่าน Actions จะใช้โควตาพื้นที่ของ GitHub Actions
 
