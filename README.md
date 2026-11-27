@@ -1,4 +1,4 @@
-# Smart Road 2.4 สำหรับ AutoCAD 2016
+# Smart Road 2.5 สำหรับ AutoCAD 2016
 
 รองรับ AutoCAD 2016 รุ่นเต็มบน Windows ใช้ AutoLISP และ Visual LISP/ActiveX โดยโหลดไฟล์ `Smart Road.lsp` ได้โดยตรง
 
