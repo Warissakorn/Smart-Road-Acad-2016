@@ -9,6 +9,7 @@
 ;;;   SRQUICK, SRPROFILE, SRSECTION - Quick corridor build, profile and section edit
 ;;;   SRDRAWROAD, SRBUILDROAD - Sketch or build roads from existing alignments
 ;;;   SRCONNECT, SRSTYLE - Join existing edges and finish road surfaces
+;;;   SRSETTINGS - Default dimensions in meters, per drawing or per user
 ;;; ==========================================================================
 
 (vl-load-com)
@@ -764,7 +765,8 @@
     ("Join Road Edges" "Preview and join two edges at one junction corner" "^C^CSRCONNECT " "SmartRoadConnect")
     ("Pedestrian Layout" "Build walkways or place a crossing, refuge or ramp symbol" "^C^CSRWALK " "SmartRoadWalk")
     ("Transit Layout" "Build bus or rail corridors and place stops or platforms" "^C^CSRTRANSIT " "SmartRoadTransit")
-    ("Surface & Markings" "Apply or clear pavement fills and lane markings" "^C^CSRSTYLE " "SmartRoadStyle")))
+    ("Surface & Markings" "Apply or clear pavement fills and lane markings" "^C^CSRSTYLE " "SmartRoadStyle")
+    ("Settings" "Set default dimensions, markings and plot scale in meters for this drawing or as your defaults" "^C^CSRSETTINGS " "SmartRoadSettings")))
 
 (defun droad:toolbar-buttons (toolbar folder index / spec button base)
   (foreach spec sr:toolbar-spec
@@ -851,13 +853,12 @@
     (roundabout-radius . 14.0) (roundabout-approach . 18.0)
     (centerline-tolerance . 0.05) (chord-tolerance . 0.005) (sample-step . 0.001)
     (plot-scale . 1000.0)
-    ;; Stripe width, dash length, gap, clear gap between double stripes.
-    (marking 0.12 3.0 6.0 0.12)))
+    (marking-width . 0.12) (marking-dash . 3.0) (marking-gap . 6.0) (marking-double-gap . 0.12)))
 
 (defun sr:default-m (key / item)
-  (if (setq item (assoc key sr:defaults))
+  (if (setq item (assoc key (car (sr:settings))))
     (cdr item)
-    (progn (princ (strcat "\nSmart Road: no default named " (vl-princ-to-string key) ".")) (exit)))
+    (sr:inherited-m key))
 )
 
 (defun sr:default (key)
@@ -868,6 +869,128 @@
 ;; metric drawings behave as before while other units scale with them.
 (defun sr:tol (meters)
   (* meters (sr:unit-scale))
+)
+
+;; --------------------------------------------------------------------------
+;; Settings: values in meters (plot scale is a ratio). A drawing's values,
+;; kept in the SMARTROAD_SETTINGS dictionary, override the user's defaults
+;; (registry, SmartRoad_Settings), which override sr:defaults.
+;; --------------------------------------------------------------------------
+
+;; Key, label, whether zero is allowed.
+(setq sr:setting-items
+  '((road-width "Road width for DROAD" nil)
+    (junction-radius "Junction corner radius" T)
+    (lane-width "Default lane width" nil)
+    (approach-width "Junction approach width" nil)
+    (approach-length "Junction approach length" nil)
+    (roundabout-radius "Roundabout outer radius" nil)
+    (roundabout-approach "Roundabout approach length" nil)
+    (turn-width "Turn lane width" nil)
+    (turn-length "Turn lane full-width length" nil)
+    (turn-taper "Turn lane entry taper" nil)
+    (crossing-span "Crosswalk span" nil)
+    (crossing-depth "Crosswalk depth" nil)
+    (crossing-pitch "Crosswalk stripe pitch" nil)
+    (island-length "Island and ramp length" nil)
+    (island-width "Island and ramp width" nil)
+    (stop-length "Bus stop length" nil)
+    (stop-width "Bus stop width" nil)
+    (platform-length "Platform length" nil)
+    (platform-width "Platform width" nil)
+    (marking-width "Marking stripe width" nil)
+    (marking-dash "Marking dash length" nil)
+    (marking-gap "Marking gap between dashes" nil)
+    (marking-double-gap "Clear gap between double stripes" nil)
+    (centerline-tolerance "Junction centerline tolerance" T)
+    (chord-tolerance "Curve chord tolerance" nil)
+    (plot-scale "Plot scale 1:" nil)))
+
+(defun sr:setting-valid-p (key value / item)
+  (and (setq item (assoc key sr:setting-items)) (numberp value)
+       (if (caddr item) (>= value 0.0) (> value 0.0)))
+)
+
+;; Keep only known keys with valid values, as (key . real) pairs.
+(defun sr:clean-settings (pairs / result)
+  (foreach pair pairs
+    (if (and (listp pair) (sr:setting-valid-p (car pair) (cdr pair)) (not (assoc (car pair) result)))
+      (setq result (cons (cons (car pair) (float (cdr pair))) result))))
+  (reverse result)
+)
+
+(defun sr:settings-dictionary (create / nod entry)
+  (setq nod (namedobjdict) entry (dictsearch nod "SMARTROAD_SETTINGS"))
+  (cond
+    (entry (cdr (assoc -1 entry)))
+    (create (dictadd nod "SMARTROAD_SETTINGS"
+              (entmakex '((0 . "DICTIONARY") (100 . "AcDbDictionary"))))))
+)
+
+(defun sr:read-drawing-settings (/ dict record data pairs)
+  (if (and (setq dict (sr:settings-dictionary nil))
+           (setq record (dictsearch dict "DEFAULTS"))
+           (setq data (cdr (member '(1 . "SR-SETTINGS-1") record))))
+    (while data
+      (if (and (= 1 (caar data)) (cadr data) (= 40 (caadr data)))
+        (setq pairs (cons (cons (read (cdar data)) (cdadr data)) pairs) data (cddr data))
+        (setq data (cdr data)))))
+  (sr:clean-settings (reverse pairs))
+)
+
+(defun sr:write-drawing-settings (pairs / dict old)
+  (setq dict (sr:settings-dictionary T) old (dictsearch dict "DEFAULTS"))
+  (if old
+    (progn (dictremove dict "DEFAULTS") (entdel (cdr (assoc -1 old)))))
+  (if pairs
+    (dictadd dict "DEFAULTS"
+      (entmakex (append '((0 . "XRECORD") (100 . "AcDbXrecord") (1 . "SR-SETTINGS-1"))
+                        (apply 'append
+                          (mapcar '(lambda (pair) (list (cons 1 (vl-symbol-name (car pair))) (cons 40 (cdr pair))))
+                                  pairs))))))
+  (setq sr:settings-cache nil *droad-unit-scale* nil)
+)
+
+(defun sr:read-user-settings (/ record)
+  (setq record (vl-catch-all-apply 'read (list (getenv "SmartRoad_Settings"))))
+  (if (and (listp record) (equal (car record) "SR-SETTINGS-1") (listp (cadr record)))
+    (sr:clean-settings
+      (mapcar '(lambda (pair) (if (and (listp pair) (= 'STR (type (car pair))))
+                                (cons (read (car pair)) (cdr pair))))
+              (cadr record))))
+)
+
+(defun sr:write-user-settings (pairs)
+  (setenv "SmartRoad_Settings"
+    (vl-prin1-to-string
+      (list "SR-SETTINGS-1"
+            (mapcar '(lambda (pair) (cons (vl-symbol-name (car pair)) (cdr pair))) pairs))))
+  (setq sr:settings-cache nil *droad-unit-scale* nil)
+)
+
+;; (drawing-pairs user-pairs), read once per drawing session and after saving.
+(defun sr:settings ()
+  (if (null sr:settings-cache)
+    (setq sr:settings-cache (list (sr:read-drawing-settings) (sr:read-user-settings))))
+  sr:settings-cache
+)
+
+(defun sr:builtin-m (key / item)
+  (if (setq item (assoc key sr:defaults))
+    (cdr item)
+    (progn (princ (strcat "\nSmart Road: no default named " (vl-princ-to-string key) ".")) (exit)))
+)
+
+;; Value without the drawing's own override: the user's default or built-in.
+(defun sr:inherited-m (key / item)
+  (if (setq item (assoc key (cadr (sr:settings)))) (cdr item) (sr:builtin-m key))
+)
+
+(defun sr:setting-source (key)
+  (cond
+    ((assoc key (car (sr:settings))) "drawing")
+    ((assoc key (cadr (sr:settings))) "my default")
+    (T "built-in"))
 )
 
 ;; Editable 2D corridors and plan symbols.
@@ -2460,6 +2583,129 @@
     'unavailable)
 )
 
+;;; SRSETTINGS: edit the working values, then keep them for this drawing or
+;;; as the user's defaults for new drawings.
+
+(defun sr:write-settings-dialog (file / line)
+  (foreach line
+    '("sr_settings : dialog {"
+      "  label = \"Smart Road - Settings\";"
+      "  : text { label = \"Values are in meters, except the plot scale. Values kept in a drawing override your defaults.\"; }"
+      "  : list_box { key = \"items\"; width = 86; height = 20; tabs = \"42 56\"; }"
+      "  : row {"
+      "    : edit_box { key = \"value\"; label = \"Value\"; edit_width = 16; }"
+      "    : button { key = \"set\"; label = \"&Set\"; }"
+      "    : button { key = \"reset\"; label = \"&Built-in value\"; }"
+      "  }"
+      "  : text { key = \"status\"; width = 86; }"
+      "  : row {"
+      "    : button { key = \"drawing\"; label = \"Keep in this &drawing\"; }"
+      "    : button { key = \"user\"; label = \"Save as my d&efaults\"; }"
+      "    : button { key = \"factory\"; label = \"All &built-in values\"; }"
+      "    : button { key = \"cancel\"; label = \"Close\"; is_cancel = true; }"
+      "  }"
+      "}")
+    (write-line line file)
+  )
+)
+
+(defun sr:settings-ui-row (item / key value)
+  (setq key (car item) value (cdr (assoc key sr:ui-settings)))
+  (strcat (cadr item) "\t" (rtos value 2 4) "\t"
+          (if (equal value (sr:default-m key) 1e-9) (sr:setting-source key) "changed, not kept"))
+)
+
+(defun sr:settings-ui-refresh (index)
+  (start_list "items")
+  (foreach item sr:setting-items (add_list (sr:settings-ui-row item)))
+  (end_list)
+  (setq sr:ui-index index)
+  (set_tile "items" (itoa index))
+  (set_tile "value" (rtos (cdr (assoc (car (nth index sr:setting-items)) sr:ui-settings)) 2 8))
+)
+
+(defun sr:settings-ui-set (value / key)
+  (setq key (car (nth sr:ui-index sr:setting-items)))
+  (if (and value (sr:setting-valid-p key value))
+    (progn
+      (setq sr:ui-settings (subst (cons key (float value)) (assoc key sr:ui-settings) sr:ui-settings))
+      (sr:settings-ui-refresh sr:ui-index)
+      (set_tile "status" ""))
+    (progn
+      (set_tile "status" (if (caddr (nth sr:ui-index sr:setting-items))
+                           "Enter a number of 0 or more." "Enter a number greater than 0."))
+      (mode_tile "value" 2)))
+)
+
+;; Pairs in the working set that differ from what BASE returns.
+(defun sr:settings-ui-differences (base / result)
+  (foreach pair sr:ui-settings
+    (if (not (equal (cdr pair) (apply base (list (car pair))) 1e-9))
+      (setq result (cons pair result))))
+  (reverse result)
+)
+
+(defun sr:settings-ui-keep (scope / pairs)
+  (if (equal scope "drawing")
+    (progn
+      (sr:write-drawing-settings (setq pairs (sr:settings-ui-differences 'sr:inherited-m)))
+      (set_tile "status" (strcat "This drawing keeps " (itoa (length pairs)) " value(s) of its own.")))
+    (progn
+      (sr:write-user-settings (setq pairs (sr:settings-ui-differences 'sr:builtin-m)))
+      (set_tile "status"
+        (strcat "Saved " (itoa (length pairs)) " default(s) for new drawings."
+                (if (car (sr:settings)) " Values kept in this drawing still apply here." "")))))
+  (sr:settings-ui-refresh sr:ui-index)
+)
+
+(defun sr:run-settings-dialog (path / sr:ui-index)
+  (setq sr:ui-file (open path "w"))
+  (if sr:ui-file
+    (progn
+      (sr:write-settings-dialog sr:ui-file)
+      (close sr:ui-file)
+      (setq sr:ui-file nil sr:ui-dcl-id (load_dialog path))))
+  (if (and sr:ui-dcl-id (> sr:ui-dcl-id 0) (new_dialog "sr_settings" sr:ui-dcl-id))
+    (progn
+      (sr:settings-ui-refresh 0)
+      (action_tile "items" "(sr:settings-ui-refresh (atoi $value)) (set_tile \"status\" \"\")")
+      (action_tile "set" "(sr:settings-ui-set (distof (get_tile \"value\") 2))")
+      (action_tile "reset" "(sr:settings-ui-set (sr:builtin-m (car (nth sr:ui-index sr:setting-items))))")
+      (action_tile "factory"
+        "(setq sr:ui-settings (mapcar '(lambda (item) (cons (car item) (sr:builtin-m (car item)))) sr:setting-items)) (sr:settings-ui-refresh sr:ui-index) (set_tile \"status\" \"Built-in values loaded. Keep them in the drawing or save them as your defaults.\")")
+      (action_tile "drawing" "(sr:settings-ui-keep \"drawing\")")
+      (action_tile "user" "(sr:settings-ui-keep \"user\")")
+      (action_tile "cancel" "(done_dialog 0)")
+      (start_dialog)
+      T)
+    'unavailable)
+)
+
+(defun sr:print-settings (/ item)
+  (princ "\nSmart Road settings (meters; plot scale as 1:N):")
+  (foreach item sr:setting-items
+    (princ (strcat "\n  " (cadr item) ": " (rtos (sr:default-m (car item)) 2 4)
+                   " [" (sr:setting-source (car item)) "]")))
+)
+
+(defun c:SRSETTINGS (/ path sr:ui-file sr:ui-dcl-id sr:ui-settings result)
+  (setq sr:settings-cache nil
+        sr:ui-settings (mapcar '(lambda (item) (cons (car item) (sr:default-m (car item)))) sr:setting-items)
+        path (vl-filename-mktemp "smart-road-settings-" nil ".dcl"))
+  (sr:warn-unitless)
+  (setq result (if path (vl-catch-all-apply 'sr:run-settings-dialog (list path)) 'unavailable))
+  (if sr:ui-file (close sr:ui-file))
+  (if (and sr:ui-dcl-id (> sr:ui-dcl-id 0)) (unload_dialog sr:ui-dcl-id))
+  (if (and path (findfile path)) (vl-file-delete path))
+  (cond
+    ((vl-catch-all-error-p result)
+     (princ (strcat "\nSmart Road settings: " (vl-catch-all-error-message result))))
+    ((eq result 'unavailable)
+     (princ "\nThe settings dialog is unavailable.")
+     (sr:print-settings)))
+  (princ)
+)
+
 ;;; Reuse the most recently accepted corridor profile across selected alignments.
 
 (defun sr:remember-quick-profile (profile)
@@ -3821,7 +4067,7 @@ Could not save the corridor data on alignment "
     (setq dimensions (cddr (sr:extent (cdadr (assoc -3 (entget entity '("SR-ROAD-STYLE"))))))))
   (if (and (= 4 (length dimensions)) (vl-every '(lambda (value) (> value 0.0)) dimensions))
     dimensions
-    (sr:default-m 'marking))
+    (mapcar 'sr:default-m '(marking-width marking-dash marking-gap marking-double-gap)))
 )
 
 (defun sr:prompt-marking-dimensions (dimensions)

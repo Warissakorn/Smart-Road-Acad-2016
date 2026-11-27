@@ -85,8 +85,10 @@
   (srsmoke:check "dialog rejects text" (sr:tile-meters "abc" nil) nil)
 )
 
-(defun c:SRSMOKECHECK (/ doc insunits ltscale saved)
-  (setq srsmoke:passed 0 srsmoke:failed 0
+(defun c:SRSMOKECHECK (/ doc insunits ltscale saved user sr:settings-cache)
+  ;; Check the built-in values: ignore any saved settings while this runs.
+  (setq sr:settings-cache '(nil nil)
+        srsmoke:passed 0 srsmoke:failed 0
         doc (vla-get-ActiveDocument (vlax-get-acad-object))
         insunits (getvar "INSUNITS") ltscale (getvar "LTSCALE"))
   (droad:ensure-layers doc)
@@ -111,6 +113,26 @@
   (setq saved (sr:begin-undo doc))
   (srsmoke:check "opens undo group" saved T)
   (if saved (vla-EndUndoMark doc))
+  ;; Settings: a drawing value beats the user's default, which beats built-in.
+  (setq sr:settings-cache (list '((road-width . 8.0)) '((road-width . 9.0) (lane-width . 3.25))))
+  (srsmoke:check "drawing setting wins" (sr:default-m 'road-width) 8.0)
+  (srsmoke:check "user default next" (sr:default-m 'lane-width) 3.25)
+  (srsmoke:check "built-in last" (sr:default-m 'turn-width) 3.25)
+  (srsmoke:check "inherited ignores drawing" (sr:inherited-m 'road-width) 9.0)
+  (srsmoke:check "source names" (mapcar 'sr:setting-source '(road-width lane-width turn-width))
+    '("drawing" "my default" "built-in"))
+  (srsmoke:check "invalid settings dropped"
+    (sr:clean-settings '((road-width . -1.0) (junction-radius . 0) (no-such . 1.0) (lane-width . 3.0)))
+    '((junction-radius . 0.0) (lane-width . 3.0)))
+  ;; Round trips through the drawing dictionary and the registry, then clean up.
+  (sr:write-drawing-settings '((turn-taper . 12.5) (plot-scale . 500.0)))
+  (srsmoke:check "drawing settings round trip" (sr:read-drawing-settings) '((turn-taper . 12.5) (plot-scale . 500.0)))
+  (sr:write-drawing-settings nil)
+  (srsmoke:check "drawing settings cleared" (sr:read-drawing-settings) nil)
+  (setq user (getenv "SmartRoad_Settings"))
+  (sr:write-user-settings '((marking-dash . 4.0)))
+  (srsmoke:check "user settings round trip" (sr:read-user-settings) '((marking-dash . 4.0)))
+  (setenv "SmartRoad_Settings" (if user user ""))
   (setvar "LTSCALE" ltscale)
   (princ (strcat "\nSRSMOKECHECK: " (itoa srsmoke:passed) " passed, " (itoa srsmoke:failed) " failed."))
   (princ)
@@ -126,7 +148,8 @@
   (if (setq found (ssget "_X" (list (cons 8 layer) '(410 . "Model")))) (sslength found) 0)
 )
 
-(defun c:SRSMOKEPLAN (/ sr:new sr:collect-plan sr:previewing east at kind radius)
+(defun c:SRSMOKEPLAN (/ sr:new sr:collect-plan sr:previewing east at kind radius sr:settings-cache)
+  (setq sr:settings-cache '(nil nil))
   (cond
     ((/= "Model" (getvar "CTAB")) (princ "\nRun in the Model tab of a blank test drawing."))
     ((ssget "_X" '((410 . "Model"))) (princ "\nUse a blank test drawing."))

@@ -21,6 +21,7 @@ PANELS = {
     "JUNCTIONS": ("Junctions", ("SRJUNCTION", "SRCONNECT")),
     "WALK_TRANSIT": ("Walk & Transit", ("SRWALK", "SRTRANSIT")),
     "FINISH": ("Finish", ("SRSTYLE",)),
+    "SETUP": ("Setup", ("SRSETTINGS",)),
 }
 EMPTY_SECTIONS = (
     "AcceleratorRoot", "DigitizerButtonRoot", "DoubleClickRoot", "ImageMenuRoot",
