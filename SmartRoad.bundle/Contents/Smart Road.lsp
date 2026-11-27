@@ -576,6 +576,7 @@
      (princ "\nEnable UNDO (All) before running Smart Road."))
     (T
      (droad:sync-units)
+     (if prompt-settings (sr:warn-unitless))
      (setq doc (vla-get-ActiveDocument (vlax-get-acad-object))
            spc (vla-get-ModelSpace doc)
            vars (mapcar '(lambda (name) (cons name (getvar name)))
@@ -733,6 +734,7 @@
     (princ "\nSwitch to Model space or activate a model viewport.")
     (progn
       (droad:sync-units)
+      (sr:warn-unitless)
       (setq choice (droad:dialog))
       (cond
         ((eq choice 1) (droad:run T nil))
@@ -1571,6 +1573,18 @@
 
 ;; Open an undo group unless one is already open. Returns T only when this
 ;; call opened it, so the caller knows to close it.
+;; Commands that start from default dimensions say once when the drawing has
+;; no units, because the defaults then assume one drawing unit is one meter.
+(defun sr:warn-unitless ()
+  (if (= 0 (getvar "INSUNITS"))
+    (princ "\nUnitless drawing (INSUNITS = 0): Smart Road treats one drawing unit as one meter. Set INSUNITS to match the drawing."))
+  T
+)
+
+(defun sr:ready-p ()
+  (and (sr:modelspace-p) (sr:warn-unitless))
+)
+
 (defun sr:begin-undo (doc)
   (if (= 0 (logand 8 (getvar "UNDOCTL")))
     (progn (vla-StartUndoMark doc) T))
@@ -1939,12 +1953,12 @@
 )
 
 (defun c:SRROAD ()
-  (if (sr:modelspace-p) (sr:create "Road"))
+  (if (sr:ready-p) (sr:create "Road"))
   (princ)
 )
 
 (defun c:SRWALK (/ option)
-  (if (sr:modelspace-p)
+  (if (sr:ready-p)
     (progn
       (initget "Walkway Crosswalk Island Ramp")
       (setq option (getkword "\nPedestrian [Walkway/Crosswalk/Island/Ramp] <Walkway>: "))
@@ -2063,7 +2077,7 @@
 )
 
 (defun c:SRTRANSIT (/ option)
-  (if (sr:modelspace-p)
+  (if (sr:ready-p)
     (progn
       (initget "Corridor LinkedStop LinkedPlatform Stop Platform")
       (setq option (getkword "\nTransit [Corridor/LinkedStop/LinkedPlatform/Stop/Platform] <Corridor>: "))
@@ -2190,7 +2204,7 @@
         (princ "\nThe arms overlap, coincide or are too short for this radius. Check the picks and widths."))))
 )
 (defun c:SRJUNCTION (/ option)
-  (if (sr:modelspace-p)
+  (if (sr:ready-p)
     (progn
       (initget "FromRoads Tee Cross Roundabout TurnLane")
       (setq option (getkword "\nJunction [FromRoads/Tee/Cross/Roundabout/TurnLane] <Cross>: "))
@@ -2528,7 +2542,7 @@ Could not save the corridor data on alignment "
 )
 
 (defun c:SRQUICK (/ filter selection axes profile default-profile skipped)
-  (if (sr:modelspace-p)
+  (if (sr:ready-p)
     (progn
       (setq filter '((0 . "LINE,ARC,LWPOLYLINE") (410 . "Model"))
             selection (ssget "_I" filter))
@@ -2567,6 +2581,7 @@ Could not save the corridor data on alignment "
 )
 
 (defun c:SRPROFILE (/ profile saved)
+  (sr:warn-unitless)
   (setq profile (sr:quick-profile))
   (if (not profile) (setq profile (sr:default-profile)))
   (setq profile (sr:configure-profile profile))
@@ -2669,7 +2684,7 @@ Could not save the corridor data on alignment "
 )
 
 (defun c:SRSECTION (/ axis model range regions overlapping prior profile taper updated choice retained)
-  (if (and (sr:modelspace-p) (setq axis (sr:pick-corridor)))
+  (if (and (sr:ready-p) (setq axis (sr:pick-corridor)))
     (progn
       (setq model (sr:model axis))
       (cond
@@ -3831,7 +3846,7 @@ Could not save the corridor data on alignment "
 )
 
 (defun c:SRSTYLE (/ axis model mode current dimensions)
-  (if (and (sr:modelspace-p)
+  (if (and (sr:ready-p)
            (or (= 0 (logand 2 (getvar "UNDOCTL")))
                (progn (princ "\nEnable UNDO (All) first.") nil))
            (setq axis (sr:pick-corridor)))
@@ -3847,8 +3862,6 @@ Could not save the corridor data on alignment "
           (progn
             (if (null mode) (setq mode (if current (sr:style-scheme current) "YellowDash")))
             (setq dimensions (sr:style-dimensions current))
-            (if (= 0 (getvar "INSUNITS"))
-              (princ "\nINSUNITS is unitless. Markings assume 1 drawing unit = 1 meter."))
             (initget "Keep Set")
             (if (equal "Set" (getkword "\nMarking dimensions [Keep/Set] <Keep>: "))
               (setq dimensions
@@ -3946,10 +3959,8 @@ Could not save the corridor data on alignment "
     (if (and msg (not (wcmatch (strcase msg) "*CANCEL*,*QUIT*,*BREAK*")))
       (princ (strcat "\nCreate Road: " msg)))
     (princ))
-  (if (and (sr:modelspace-p) (= 0 (logand 2 (getvar "UNDOCTL"))))
+  (if (and (sr:ready-p) (= 0 (logand 2 (getvar "UNDOCTL"))))
     (progn
-      (if (= 0 (getvar "INSUNITS"))
-        (princ "\nUnitless drawing: default dimensions assume one drawing unit is one meter."))
       (setq filter '((0 . "LINE,ARC,LWPOLYLINE") (410 . "Model")))
       (if (not (equal mode "Draw")) (setq selection (ssget "_I" filter)))
       (if (setq profile (sr:create-road-profile mode))
