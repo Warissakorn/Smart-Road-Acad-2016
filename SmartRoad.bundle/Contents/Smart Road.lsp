@@ -9,6 +9,7 @@
 ;;;   SRQUICK, SRPROFILE, SRSECTION - Quick corridor build, profile and section edit
 ;;;   SRDRAWROAD, SRBUILDROAD - Sketch or build roads from existing alignments
 ;;;   SRCONNECT, SRSTYLE - Join existing edges and finish road surfaces
+;;;   SRSETTINGS - Default dimensions in meters, per drawing or per user
 ;;; ==========================================================================
 
 (vl-load-com)
@@ -546,13 +547,8 @@
 )
 
 (defun droad:settings (/ width radius)
-  (initget 6)
-  (setq width (getdist (strcat "\nRoad width <" (rtos *droad-width* 2 2) ">: ")))
-  (initget 4)
-  (setq radius (getdist (strcat "\nJunction fillet radius, 0 for square corners <"
-                               (rtos *droad-fillet* 2 2) ">: ")))
-  (if width (setq *droad-width* width))
-  (if radius (setq *droad-fillet* radius))
+  (setq *droad-width* (sr:number "Road width" *droad-width* nil)
+        *droad-fillet* (sr:number "Junction fillet radius, 0 for square corners" *droad-fillet* T))
 )
 
 (defun droad:restore (doc vars undo-open / item)
@@ -648,7 +644,7 @@
     '("smart_road : dialog {"
       "  label = \"Smart Road\";"
       "  : boxed_column {"
-      "    label = \"Road settings (drawing units)\";"
+      "    label = \"Road settings (meters)\";"
       "    : edit_box { key = \"width\"; label = \"Full road width\"; edit_width = 14; }"
       "    : edit_box { key = \"radius\"; label = \"Junction fillet radius\"; edit_width = 14; }"
       "    : text { label = \"Set the radius to 0 for square corners.\"; }"
@@ -668,12 +664,8 @@
 (defun droad:accept-dialog (choice / width-text radius-text width radius)
   (setq width-text (vl-string-trim " " (get_tile "width"))
         radius-text (vl-string-trim " " (get_tile "radius"))
-        width (if (= width-text (rtos *droad-width* 2 8))
-                *droad-width*
-                (distof width-text 2))
-        radius (if (= radius-text (rtos *droad-fillet* 2 8))
-                 *droad-fillet*
-                 (distof radius-text 2)))
+        width (sr:tile-meters width-text *droad-width*)
+        radius (sr:tile-meters radius-text *droad-fillet*))
   (cond
     ((or (null width) (<= width 0.0))
      (set_tile "message" "Enter a road width greater than 0.")
@@ -708,8 +700,8 @@
       (setq file nil dialog-id (load_dialog path))
       (if (and (> dialog-id 0) (new_dialog "smart_road" dialog-id))
         (progn
-          (set_tile "width" (rtos *droad-width* 2 8))
-          (set_tile "radius" (rtos *droad-fillet* 2 8))
+          (set_tile "width" (sr:meters-text *droad-width*))
+          (set_tile "radius" (sr:meters-text *droad-fillet*))
           (action_tile "width" "(set_tile \"message\" \"\")")
           (action_tile "radius" "(set_tile \"message\" \"\")")
           (action_tile "draw" "(droad:accept-dialog 1)")
@@ -773,7 +765,8 @@
     ("Join Road Edges" "Preview and join two edges at one junction corner" "^C^CSRCONNECT " "SmartRoadConnect")
     ("Pedestrian Layout" "Build walkways or place a crossing, refuge or ramp symbol" "^C^CSRWALK " "SmartRoadWalk")
     ("Transit Layout" "Build bus or rail corridors and place stops or platforms" "^C^CSRTRANSIT " "SmartRoadTransit")
-    ("Surface & Markings" "Apply or clear pavement fills and lane markings" "^C^CSRSTYLE " "SmartRoadStyle")))
+    ("Surface & Markings" "Apply or clear pavement fills and lane markings" "^C^CSRSTYLE " "SmartRoadStyle")
+    ("Settings" "Set default dimensions, markings and plot scale in meters for this drawing or as your defaults" "^C^CSRSETTINGS " "SmartRoadSettings")))
 
 (defun droad:toolbar-buttons (toolbar folder index / spec button base)
   (foreach spec sr:toolbar-spec
@@ -860,13 +853,12 @@
     (roundabout-radius . 14.0) (roundabout-approach . 18.0)
     (centerline-tolerance . 0.05) (chord-tolerance . 0.005) (sample-step . 0.001)
     (plot-scale . 1000.0)
-    ;; Stripe width, dash length, gap, clear gap between double stripes.
-    (marking 0.12 3.0 6.0 0.12)))
+    (marking-width . 0.12) (marking-dash . 3.0) (marking-gap . 6.0) (marking-double-gap . 0.12)))
 
 (defun sr:default-m (key / item)
-  (if (setq item (assoc key sr:defaults))
+  (if (setq item (assoc key (car (sr:settings))))
     (cdr item)
-    (progn (princ (strcat "\nSmart Road: no default named " (vl-princ-to-string key) ".")) (exit)))
+    (sr:inherited-m key))
 )
 
 (defun sr:default (key)
@@ -879,6 +871,128 @@
   (* meters (sr:unit-scale))
 )
 
+;; --------------------------------------------------------------------------
+;; Settings: values in meters (plot scale is a ratio). A drawing's values,
+;; kept in the SMARTROAD_SETTINGS dictionary, override the user's defaults
+;; (registry, SmartRoad_Settings), which override sr:defaults.
+;; --------------------------------------------------------------------------
+
+;; Key, label, whether zero is allowed.
+(setq sr:setting-items
+  '((road-width "Road width for DROAD" nil)
+    (junction-radius "Junction corner radius" T)
+    (lane-width "Default lane width" nil)
+    (approach-width "Junction approach width" nil)
+    (approach-length "Junction approach length" nil)
+    (roundabout-radius "Roundabout outer radius" nil)
+    (roundabout-approach "Roundabout approach length" nil)
+    (turn-width "Turn lane width" nil)
+    (turn-length "Turn lane full-width length" nil)
+    (turn-taper "Turn lane entry taper" nil)
+    (crossing-span "Crosswalk span" nil)
+    (crossing-depth "Crosswalk depth" nil)
+    (crossing-pitch "Crosswalk stripe pitch" nil)
+    (island-length "Island and ramp length" nil)
+    (island-width "Island and ramp width" nil)
+    (stop-length "Bus stop length" nil)
+    (stop-width "Bus stop width" nil)
+    (platform-length "Platform length" nil)
+    (platform-width "Platform width" nil)
+    (marking-width "Marking stripe width" nil)
+    (marking-dash "Marking dash length" nil)
+    (marking-gap "Marking gap between dashes" nil)
+    (marking-double-gap "Clear gap between double stripes" nil)
+    (centerline-tolerance "Junction centerline tolerance" T)
+    (chord-tolerance "Curve chord tolerance" nil)
+    (plot-scale "Plot scale 1:" nil)))
+
+(defun sr:setting-valid-p (key value / item)
+  (and (setq item (assoc key sr:setting-items)) (numberp value)
+       (if (caddr item) (>= value 0.0) (> value 0.0)))
+)
+
+;; Keep only known keys with valid values, as (key . real) pairs.
+(defun sr:clean-settings (pairs / result)
+  (foreach pair pairs
+    (if (and (listp pair) (sr:setting-valid-p (car pair) (cdr pair)) (not (assoc (car pair) result)))
+      (setq result (cons (cons (car pair) (float (cdr pair))) result))))
+  (reverse result)
+)
+
+(defun sr:settings-dictionary (create / nod entry)
+  (setq nod (namedobjdict) entry (dictsearch nod "SMARTROAD_SETTINGS"))
+  (cond
+    (entry (cdr (assoc -1 entry)))
+    (create (dictadd nod "SMARTROAD_SETTINGS"
+              (entmakex '((0 . "DICTIONARY") (100 . "AcDbDictionary"))))))
+)
+
+(defun sr:read-drawing-settings (/ dict record data pairs)
+  (if (and (setq dict (sr:settings-dictionary nil))
+           (setq record (dictsearch dict "DEFAULTS"))
+           (setq data (cdr (member '(1 . "SR-SETTINGS-1") record))))
+    (while data
+      (if (and (= 1 (caar data)) (cadr data) (= 40 (caadr data)))
+        (setq pairs (cons (cons (read (cdar data)) (cdadr data)) pairs) data (cddr data))
+        (setq data (cdr data)))))
+  (sr:clean-settings (reverse pairs))
+)
+
+(defun sr:write-drawing-settings (pairs / dict old)
+  (setq dict (sr:settings-dictionary T) old (dictsearch dict "DEFAULTS"))
+  (if old
+    (progn (dictremove dict "DEFAULTS") (entdel (cdr (assoc -1 old)))))
+  (if pairs
+    (dictadd dict "DEFAULTS"
+      (entmakex (append '((0 . "XRECORD") (100 . "AcDbXrecord") (1 . "SR-SETTINGS-1"))
+                        (apply 'append
+                          (mapcar '(lambda (pair) (list (cons 1 (vl-symbol-name (car pair))) (cons 40 (cdr pair))))
+                                  pairs))))))
+  (setq sr:settings-cache nil *droad-unit-scale* nil)
+)
+
+(defun sr:read-user-settings (/ record)
+  (setq record (vl-catch-all-apply 'read (list (getenv "SmartRoad_Settings"))))
+  (if (and (listp record) (equal (car record) "SR-SETTINGS-1") (listp (cadr record)))
+    (sr:clean-settings
+      (mapcar '(lambda (pair) (if (and (listp pair) (= 'STR (type (car pair))))
+                                (cons (read (car pair)) (cdr pair))))
+              (cadr record))))
+)
+
+(defun sr:write-user-settings (pairs)
+  (setenv "SmartRoad_Settings"
+    (vl-prin1-to-string
+      (list "SR-SETTINGS-1"
+            (mapcar '(lambda (pair) (cons (vl-symbol-name (car pair)) (cdr pair))) pairs))))
+  (setq sr:settings-cache nil *droad-unit-scale* nil)
+)
+
+;; (drawing-pairs user-pairs), read once per drawing session and after saving.
+(defun sr:settings ()
+  (if (null sr:settings-cache)
+    (setq sr:settings-cache (list (sr:read-drawing-settings) (sr:read-user-settings))))
+  sr:settings-cache
+)
+
+(defun sr:builtin-m (key / item)
+  (if (setq item (assoc key sr:defaults))
+    (cdr item)
+    (progn (princ (strcat "\nSmart Road: no default named " (vl-princ-to-string key) ".")) (exit)))
+)
+
+;; Value without the drawing's own override: the user's default or built-in.
+(defun sr:inherited-m (key / item)
+  (if (setq item (assoc key (cadr (sr:settings)))) (cdr item) (sr:builtin-m key))
+)
+
+(defun sr:setting-source (key)
+  (cond
+    ((assoc key (car (sr:settings))) "drawing")
+    ((assoc key (cadr (sr:settings))) "my default")
+    (T "built-in"))
+)
+
 ;; Editable 2D corridors and plan symbols.
 (setq sr:bands
   '(("Lane" 3.5 7) ("Median" 2.0 2) ("Shoulder" 1.5 8)
@@ -886,10 +1000,26 @@
     ("BRT" 3.5 1) ("Curb" 0.15 8) ("Walkway" 2.0 3)
     ("Rail" 1.435 6) ("TrackGap" 2.0 8) ("Platform" 3.0 5)))
 
+;; Every length prompt asks in meters. DEFAULT and the result are drawing
+;; units, so callers stay in drawing units; DEFAULT may be nil (no default).
 (defun sr:number (label default allow-zero / value)
   (initget (if allow-zero 4 6))
-  (setq value (getreal (strcat "\n" label " <" (rtos default 2 4) ">: ")))
-  (if value value default)
+  (setq value (getreal (strcat "\n" label ", m"
+                               (if default (strcat " <" (rtos (/ default (sr:unit-scale)) 2 4) ">") "")
+                               ": ")))
+  (if value (* value (sr:unit-scale)) default)
+)
+
+(defun sr:meters-text (length)
+  (rtos (/ length (sr:unit-scale)) 2 8)
+)
+
+;; A dialog field holding meters: keep CURRENT when the text is unchanged so
+;; round-tripping through text does not alter the stored drawing-unit value.
+(defun sr:tile-meters (text current / value)
+  (cond
+    ((and current (equal text (sr:meters-text current))) current)
+    ((setq value (distof text 2)) (* value (sr:unit-scale))))
 )
 
 (defun sr:preset-metres (group / option)
@@ -961,9 +1091,9 @@
 
 (defun sr:profile-summary (profile / side text band)
   (foreach side profile
-    (setq text (if text "\nRight:" "\nLeft:"))
+    (setq text (if text "\nRight (m):" "\nLeft (m):"))
     (foreach band side
-      (setq text (strcat text " " (car band) " " (rtos (cadr band) 2 4))))
+      (setq text (strcat text " " (car band) " " (rtos (/ (cadr band) (sr:unit-scale)) 2 4))))
     (princ (if side text (strcat text " (empty)")))
   )
 )
@@ -1006,7 +1136,9 @@
                  (list (list kind (sr:number "Band width" (* (sr:unit-scale) (cadr spec)) nil)))
                  (sr:drop (1- index) side))))))))
       (T (princ "\nA side can have up to 16 bands.")))
-    (princ (strcat "\n" label " (from alignment outward): " (vl-prin1-to-string side)))
+    (princ (strcat "\n" label " (from alignment outward, m): "
+                   (vl-prin1-to-string
+                     (mapcar '(lambda (band) (list (car band) (/ (cadr band) (sr:unit-scale)))) side))))
   )
   side
 )
@@ -1632,13 +1764,11 @@
 
 (defun sr:range (axis / first last length)
   (setq length (sr:length axis))
-  (princ (strcat "\nAlignment length: " (rtos length 2 4)))
-  (initget 4)
-  (setq first (getreal "\nStart distance from alignment start: "))
+  (princ (strcat "\nAlignment length: " (rtos (/ length (sr:unit-scale)) 2 4) " m"))
+  (setq first (sr:number "Start distance from alignment start" nil T))
   (if first
     (progn
-      (initget 6)
-      (setq last (getreal "\nEnd distance from alignment start: "))
+      (setq last (sr:number "End distance from alignment start" nil nil))
       (if (and last (< first last) (<= last length))
         (list first last)
         (progn (princ "\nEnter an increasing range within the alignment.") nil))))
@@ -1739,7 +1869,8 @@
   (princ)
 )
 
-;; Plan features use a user-picked local XY frame, with dimensions in drawing units.
+;; Plan features use a user-picked local XY frame. Prompts take meters; the
+;; geometry works in drawing units.
 (defun sr:local (origin direction x y)
   (list (+ (car origin) (* x (car direction)) (* y (- (cadr direction))))
         (+ (cadr origin) (* x (cadr direction)) (* y (car direction)))
@@ -2064,7 +2195,7 @@
         (initget "Left Right")
         (setq side (getkword "\nSide of alignment [Left/Right] <Right>: ")
               sign (if (equal side "Left") 1.0 -1.0)
-              gap (sr:number "Clearance from corridor edge (drawing units)" 0.0 T)
+              gap (sr:number "Clearance from corridor edge" 0.0 T)
               length (sr:number "Feature length" (sr:default (if (equal kind "Stop") 'stop-length 'platform-length)) nil)
               width (sr:number "Feature width" (sr:default (if (equal kind "Stop") 'stop-width 'platform-width)) nil)
               values (list station sign gap length width)
@@ -2140,7 +2271,7 @@
               a (sr:side-width profile 0)
               b (sr:side-width profile 1))
         (progn
-          (setq width (sr:number "Arm width (drawing units)"
+          (setq width (sr:number "Arm width"
                          (droad:get-width-xdata axis (sr:default 'road-width)) nil)
                 a (* 0.5 width) b a)))
       ;; Left and right widths follow the station direction; swap them for an arm running backwards.
@@ -2211,12 +2342,12 @@
       (setq origin (trans origin 1 0))
       (initget "Three Four")
       (setq count (if (equal "Four" (getkword "\nNumber of arms [Three/Four] <Three>: ")) 4 3)
-            tolerance (sr:number "Centerline tolerance (drawing units)" (sr:default 'centerline-tolerance) T))
+            tolerance (sr:number "Centerline tolerance" (sr:default 'centerline-tolerance) T))
       (repeat count
         (if (setq arm (srj:road-arm origin tolerance))
           (setq arms (cons arm arms))
           (exit)))
-      (setq radius (sr:number "Corner radius (drawing units)" (sr:default 'junction-radius) T))
+      (setq radius (sr:number "Corner radius" (sr:default 'junction-radius) T))
       (if (setq plan (srj:road-layout origin arms radius))
         (foreach item plan
           (sr:plan-geometry 'sr:poly (list (car item) nil "SR-JUNCTION"))
@@ -2247,7 +2378,7 @@
   (foreach line
     '("sr_profile : dialog {"
       "  label = \"Smart Road - Cross Section\";"
-      "  : text { label = \"Bands are listed from the alignment outward. Widths use drawing units.\"; }"
+      "  : text { label = \"Bands are listed from the alignment outward. Widths are in meters.\"; }"
       "  : row {"
       "    : boxed_column { label = \"Left of alignment\";"
       "      : list_box { key = \"left\"; width = 32; height = 10; tabs = \"19\"; }"
@@ -2282,7 +2413,7 @@
 (defun sr:profile-ui-list (key bands / band)
   (start_list key)
   (foreach band bands
-    (add_list (strcat (car band) "\t" (rtos (cadr band) 2 8))))
+    (add_list (strcat (car band) "\t" (rtos (/ (cadr band) (sr:unit-scale)) 2 4))))
   (end_list)
 )
 
@@ -2300,7 +2431,7 @@
   (if band
     (progn
       (set_tile "kind" (itoa (- (length sr:bands) (length (member (assoc (car band) sr:bands) sr:bands)))))
-      (set_tile "width" (rtos (cadr band) 2 8))))
+      (set_tile "width" (sr:meters-text (cadr band)))))
 )
 
 (defun sr:profile-ui-refresh (side index)
@@ -2331,15 +2462,13 @@
       (setq kind (car (nth (atoi (get_tile "kind")) sr:bands))
             old-band (if (equal action "update") (nth index bands))
             raw (vl-string-trim " " (get_tile "width"))
-            width (if (and old-band (equal raw (rtos (cadr old-band) 2 8)))
-                    (cadr old-band)
-                    (distof raw 2)))))
+            width (sr:tile-meters raw (if old-band (cadr old-band))))))
   (cond
     ((null index) nil)
     ((and (member action '("add" "insert")) (>= (length bands) 16))
      (set_tile "status" "A side can contain up to 16 bands."))
     ((and (not (equal action "remove")) (or (null width) (<= width 0.0)))
-     (set_tile "status" "Enter a positive width in drawing units.")
+     (set_tile "status" "Enter a positive width in meters.")
      (mode_tile "width" 2)
      (mode_tile "width" 3))
     (T
@@ -2423,10 +2552,10 @@
       (foreach band sr:bands (add_list (car band)))
       (end_list)
       (set_tile "kind" "0")
-      (set_tile "width" (rtos (* (sr:unit-scale) (cadar sr:bands)) 2 8))
+      (set_tile "width" (rtos (cadar sr:bands) 2 8))
       (sr:profile-ui-refresh (if (car sr:ui-profile) 0 1)
                             (if (or (car sr:ui-profile) (cadr sr:ui-profile)) 0))
-      (action_tile "kind" "(set_tile \"width\" (rtos (* (sr:unit-scale) (cadr (nth (atoi $value) sr:bands))) 2 8))")
+      (action_tile "kind" "(set_tile \"width\" (rtos (cadr (nth (atoi $value) sr:bands)) 2 8))")
       (action_tile "left" "(sr:profile-ui-pick 0 $value)")
       (action_tile "right" "(sr:profile-ui-pick 1 $value)")
       (action_tile "add_left" "(sr:profile-ui-edit \"add\" 0)")
@@ -2452,6 +2581,129 @@
       (if (findfile path) (vl-file-delete path))
       (if (vl-catch-all-error-p result) 'unavailable result))
     'unavailable)
+)
+
+;;; SRSETTINGS: edit the working values, then keep them for this drawing or
+;;; as the user's defaults for new drawings.
+
+(defun sr:write-settings-dialog (file / line)
+  (foreach line
+    '("sr_settings : dialog {"
+      "  label = \"Smart Road - Settings\";"
+      "  : text { label = \"Values are in meters, except the plot scale. Values kept in a drawing override your defaults.\"; }"
+      "  : list_box { key = \"items\"; width = 86; height = 20; tabs = \"42 56\"; }"
+      "  : row {"
+      "    : edit_box { key = \"value\"; label = \"Value\"; edit_width = 16; }"
+      "    : button { key = \"set\"; label = \"&Set\"; }"
+      "    : button { key = \"reset\"; label = \"&Built-in value\"; }"
+      "  }"
+      "  : text { key = \"status\"; width = 86; }"
+      "  : row {"
+      "    : button { key = \"drawing\"; label = \"Keep in this &drawing\"; }"
+      "    : button { key = \"user\"; label = \"Save as my d&efaults\"; }"
+      "    : button { key = \"factory\"; label = \"All &built-in values\"; }"
+      "    : button { key = \"cancel\"; label = \"Close\"; is_cancel = true; }"
+      "  }"
+      "}")
+    (write-line line file)
+  )
+)
+
+(defun sr:settings-ui-row (item / key value)
+  (setq key (car item) value (cdr (assoc key sr:ui-settings)))
+  (strcat (cadr item) "\t" (rtos value 2 4) "\t"
+          (if (equal value (sr:default-m key) 1e-9) (sr:setting-source key) "changed, not kept"))
+)
+
+(defun sr:settings-ui-refresh (index)
+  (start_list "items")
+  (foreach item sr:setting-items (add_list (sr:settings-ui-row item)))
+  (end_list)
+  (setq sr:ui-index index)
+  (set_tile "items" (itoa index))
+  (set_tile "value" (rtos (cdr (assoc (car (nth index sr:setting-items)) sr:ui-settings)) 2 8))
+)
+
+(defun sr:settings-ui-set (value / key)
+  (setq key (car (nth sr:ui-index sr:setting-items)))
+  (if (and value (sr:setting-valid-p key value))
+    (progn
+      (setq sr:ui-settings (subst (cons key (float value)) (assoc key sr:ui-settings) sr:ui-settings))
+      (sr:settings-ui-refresh sr:ui-index)
+      (set_tile "status" ""))
+    (progn
+      (set_tile "status" (if (caddr (nth sr:ui-index sr:setting-items))
+                           "Enter a number of 0 or more." "Enter a number greater than 0."))
+      (mode_tile "value" 2)))
+)
+
+;; Pairs in the working set that differ from what BASE returns.
+(defun sr:settings-ui-differences (base / result)
+  (foreach pair sr:ui-settings
+    (if (not (equal (cdr pair) (apply base (list (car pair))) 1e-9))
+      (setq result (cons pair result))))
+  (reverse result)
+)
+
+(defun sr:settings-ui-keep (scope / pairs)
+  (if (equal scope "drawing")
+    (progn
+      (sr:write-drawing-settings (setq pairs (sr:settings-ui-differences 'sr:inherited-m)))
+      (set_tile "status" (strcat "This drawing keeps " (itoa (length pairs)) " value(s) of its own.")))
+    (progn
+      (sr:write-user-settings (setq pairs (sr:settings-ui-differences 'sr:builtin-m)))
+      (set_tile "status"
+        (strcat "Saved " (itoa (length pairs)) " default(s) for new drawings."
+                (if (car (sr:settings)) " Values kept in this drawing still apply here." "")))))
+  (sr:settings-ui-refresh sr:ui-index)
+)
+
+(defun sr:run-settings-dialog (path / sr:ui-index)
+  (setq sr:ui-file (open path "w"))
+  (if sr:ui-file
+    (progn
+      (sr:write-settings-dialog sr:ui-file)
+      (close sr:ui-file)
+      (setq sr:ui-file nil sr:ui-dcl-id (load_dialog path))))
+  (if (and sr:ui-dcl-id (> sr:ui-dcl-id 0) (new_dialog "sr_settings" sr:ui-dcl-id))
+    (progn
+      (sr:settings-ui-refresh 0)
+      (action_tile "items" "(sr:settings-ui-refresh (atoi $value)) (set_tile \"status\" \"\")")
+      (action_tile "set" "(sr:settings-ui-set (distof (get_tile \"value\") 2))")
+      (action_tile "reset" "(sr:settings-ui-set (sr:builtin-m (car (nth sr:ui-index sr:setting-items))))")
+      (action_tile "factory"
+        "(setq sr:ui-settings (mapcar '(lambda (item) (cons (car item) (sr:builtin-m (car item)))) sr:setting-items)) (sr:settings-ui-refresh sr:ui-index) (set_tile \"status\" \"Built-in values loaded. Keep them in the drawing or save them as your defaults.\")")
+      (action_tile "drawing" "(sr:settings-ui-keep \"drawing\")")
+      (action_tile "user" "(sr:settings-ui-keep \"user\")")
+      (action_tile "cancel" "(done_dialog 0)")
+      (start_dialog)
+      T)
+    'unavailable)
+)
+
+(defun sr:print-settings (/ item)
+  (princ "\nSmart Road settings (meters; plot scale as 1:N):")
+  (foreach item sr:setting-items
+    (princ (strcat "\n  " (cadr item) ": " (rtos (sr:default-m (car item)) 2 4)
+                   " [" (sr:setting-source (car item)) "]")))
+)
+
+(defun c:SRSETTINGS (/ path sr:ui-file sr:ui-dcl-id sr:ui-settings result)
+  (setq sr:settings-cache nil
+        sr:ui-settings (mapcar '(lambda (item) (cons (car item) (sr:default-m (car item)))) sr:setting-items)
+        path (vl-filename-mktemp "smart-road-settings-" nil ".dcl"))
+  (sr:warn-unitless)
+  (setq result (if path (vl-catch-all-apply 'sr:run-settings-dialog (list path)) 'unavailable))
+  (if sr:ui-file (close sr:ui-file))
+  (if (and sr:ui-dcl-id (> sr:ui-dcl-id 0)) (unload_dialog sr:ui-dcl-id))
+  (if (and path (findfile path)) (vl-file-delete path))
+  (cond
+    ((vl-catch-all-error-p result)
+     (princ (strcat "\nSmart Road settings: " (vl-catch-all-error-message result))))
+    ((eq result 'unavailable)
+     (princ "\nThe settings dialog is unavailable.")
+     (sr:print-settings)))
+  (princ)
 )
 
 ;;; Reuse the most recently accepted corridor profile across selected alignments.
@@ -3095,9 +3347,9 @@ Could not save the corridor data on alignment "
 
 (defun srj:preview (plan / corner height size)
   (if (> (nth 4 plan) 1e-6)
-    (princ (strcat "\nThe corner is " (rtos (nth 4 plan) 2 4) " units beyond the first edge.")))
+    (princ (strcat "\nThe corner is " (rtos (/ (nth 4 plan) (sr:unit-scale)) 2 4) " m beyond the first edge.")))
   (if (> (nth 5 plan) 1e-6)
-    (princ (strcat "\nThe corner is " (rtos (nth 5 plan) 2 4) " units beyond the second edge.")))
+    (princ (strcat "\nThe corner is " (rtos (/ (nth 5 plan) (sr:unit-scale)) 2 4) " m beyond the second edge.")))
   (srj:draw-preview (car plan))
   (srj:draw-preview (cadr plan))
   (if (caddr plan) (srj:draw-preview (srj:arc-points (caddr plan))))
@@ -3815,7 +4067,7 @@ Could not save the corridor data on alignment "
     (setq dimensions (cddr (sr:extent (cdadr (assoc -3 (entget entity '("SR-ROAD-STYLE"))))))))
   (if (and (= 4 (length dimensions)) (vl-every '(lambda (value) (> value 0.0)) dimensions))
     dimensions
-    (sr:default-m 'marking))
+    (mapcar 'sr:default-m '(marking-width marking-dash marking-gap marking-double-gap)))
 )
 
 (defun sr:prompt-marking-dimensions (dimensions)
@@ -3827,7 +4079,7 @@ Could not save the corridor data on alignment "
 
 (defun sr:style-dimension-input (label current / value)
   (initget 6)
-  (setq value (getreal (strcat "\n" label " in meters <" (rtos current 2 8) ">: ")))
+  (setq value (getreal (strcat "\n" label ", m <" (rtos current 2 4) ">: ")))
   (if value value current)
 )
 
@@ -3956,7 +4208,7 @@ Could not save the corridor data on alignment "
             default (if dedicated keyword "Configure"))
       (if dedicated
         (progn
-          (princ "\nActive cross section (drawing units):")
+          (princ "\nActive cross section:")
           (sr:profile-summary active)))
       (initget (strcat "Configure " keyword))
       (setq choice (getkword (strcat "\nCross section [Configure/" keyword "] <" default ">: ")))
@@ -4011,8 +4263,8 @@ Could not save the corridor data on alignment "
               (if (or points axes)
                 (progn
                   (princ (strcat "\n" (itoa (if points 1 (length axes)))
-                    " road(s), total width per road " (rtos total 2 4)
-                    " drawing units (" (rtos (/ total (sr:unit-scale)) 2 4) " m)."))
+                    " road(s), total width per road " (rtos (/ total (sr:unit-scale)) 2 4)
+                    " m (" (rtos total 2 4) " drawing units)."))
                   (if points
                     (if (not (sr:road-sketch-preview points profile scheme dimensions))
                       (progn (princ "\nThe alignment has a sharp bend that cannot retain the section width.") (exit)))
