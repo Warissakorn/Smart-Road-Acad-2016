@@ -110,3 +110,56 @@
   (princ (strcat "\nSRSMOKECHECK: " (itoa srsmoke:passed) " passed, " (itoa srsmoke:failed) " failed."))
   (princ)
 )
+
+;;; SRSMOKEPLAN draws every plan feature with the default dimensions through
+;;; the sr:draw-* builders, without prompts, and checks the entity count per
+;;; layer. Run it in a new blank drawing; it leaves the geometry for review.
+;;; Expected counts follow from the builders: one entity per shape, box,
+;;; circle, arc or solid.
+
+(defun srsmoke:count (layer / found)
+  (if (setq found (ssget "_X" (list (cons 8 layer) '(410 . "Model")))) (sslength found) 0)
+)
+
+(defun c:SRSMOKEPLAN (/ sr:new sr:collect-plan sr:previewing east at kind radius)
+  (cond
+    ((/= "Model" (getvar "CTAB")) (princ "\nRun in the Model tab of a blank test drawing."))
+    ((ssget "_X" '((410 . "Model"))) (princ "\nUse a blank test drawing."))
+    (T
+     (setq srsmoke:passed 0 srsmoke:failed 0 east '(1.0 0.0 0.0))
+     (setvar "FILLMODE" 1)
+     (defun at (column) (list (* column 60.0 (sr:unit-scale)) 0.0 0.0))
+     (sr:draw-crosswalk (at 0) east (sr:default 'crossing-span) (sr:default 'crossing-depth)
+       (fix (/ (sr:default 'crossing-span) (sr:default 'crossing-pitch))))
+     (foreach kind '("Island" "Ramp" "Stop" "Platform")
+       (sr:draw-pad kind (at (1+ (vl-position kind '("Island" "Ramp" "Stop" "Platform")))) east
+         (sr:default (cdr (assoc kind '(("Island" . island-length) ("Ramp" . island-length)
+                                         ("Stop" . stop-length) ("Platform" . platform-length)))))
+         (sr:default (cdr (assoc kind '(("Island" . island-width) ("Ramp" . island-width)
+                                         ("Stop" . stop-width) ("Platform" . platform-width)))))))
+     (sr:draw-turn-lane (at 6) east (- (sr:default 'turn-width)) (sr:default 'turn-length) (sr:default 'turn-taper))
+     (sr:draw-junction "Cross" (at 8) east (sr:default 'approach-width) (sr:default 'approach-length)
+       (sr:default 'junction-radius))
+     (sr:draw-junction "Tee" (at 10) east (sr:default 'approach-width) (sr:default 'approach-length)
+       (sr:default 'junction-radius))
+     (setq radius (sr:default 'roundabout-radius))
+     (srsmoke:check "roundabout fits with defaults"
+       (sr:roundabout-fits-p radius (* radius 0.45) (sr:default 'approach-width)) T)
+     (sr:draw-roundabout (at 12) east radius (* radius 0.45) (sr:default 'approach-width)
+       (sr:default 'roundabout-approach))
+     ;; 7.0 / 0.75 gives 9 stripes, each a box and a solid.
+     (srsmoke:check "crosswalk boxes" (srsmoke:count "SR-CROSSWALK") 9)
+     (srsmoke:check "crosswalk solids" (srsmoke:count "SR-MARK-CROSSWALK") 9)
+     (srsmoke:check "island" (srsmoke:count "SR-ISLAND") 1)
+     (srsmoke:check "ramp box and diagonals" (srsmoke:count "SR-RAMP") 3)
+     (srsmoke:check "stop box and pole" (srsmoke:count "SR-STOP") 2)
+     (srsmoke:check "platform" (srsmoke:count "SR-PLATFORM") 1)
+     (srsmoke:check "turn lane" (srsmoke:count "SR-TURN-LANE") 2)
+     ;; Cross: 4 corners x (2 edges + 1 arc) = 12. Tee: 2 corners x 3 + far edge = 7.
+     (srsmoke:check "cross and tee" (srsmoke:count "SR-JUNCTION") 19)
+     ;; Island circle + 4 x (arc + 2 approach edges).
+     (srsmoke:check "roundabout" (srsmoke:count "SR-ROUNDABOUT") 13)
+     (vl-cmdf "_.ZOOM" "_Extents")
+     (princ (strcat "\nSRSMOKEPLAN: " (itoa srsmoke:passed) " passed, " (itoa srsmoke:failed) " failed."))))
+  (princ)
+)
