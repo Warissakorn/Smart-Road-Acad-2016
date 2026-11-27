@@ -3373,26 +3373,41 @@ Could not save the corridor data on alignment "
   ranges
 )
 
-(defun srj:affected-appearance (owner extents / entity data extent result)
-  (foreach entity (sr:style-owned owner)
-    (setq data (cdadr (assoc -3 (entget entity '("SR-ROAD-STYLE"))))
-          extent (sr:extent data))
-    (if (or (null extent) (member nil extents)
-            (vl-some '(lambda (range) (sr:ranges-overlap-p range extent)) extents))
-      (setq result (cons entity result))))
-  result
+;; A dashed marking can span multiple sections. Include every overlapping
+;; appearance extent to repaint what was removed without leaving duplicates.
+(defun srj:affected-appearance (owner extents / all entity extent pending deferred changed record covered result)
+  (setq all (sr:style-owned owner))
+  (foreach entity all
+    (setq extent (sr:extent (cdadr (assoc -3 (entget entity '("SR-ROAD-STYLE"))))))
+    (if (cadr extent)
+      (setq pending (cons (list entity (car extent) (cadr extent)) pending))
+      (setq extents (list nil))))
+  (if (member nil extents)
+    (list extents all)
+    (progn
+      (setq changed T extents (sr:merge-ranges extents))
+      (while (and changed pending)
+        (setq changed nil deferred nil)
+        (foreach record pending
+          (setq extent (cdr record))
+          (if (setq covered (vl-some '(lambda (range) (if (sr:ranges-overlap-p range extent) range)) extents))
+            (progn
+              (setq result (cons (car record) result))
+              (if (or (< (car extent) (car covered)) (> (cadr extent) (cadr covered)))
+                (setq extents (sr:merge-ranges (cons extent extents)) changed T)))
+            (setq deferred (cons record deferred))))
+        (setq pending deferred))
+      (list extents result)))
 )
 
 ;; Returns T when the affected spans were repainted, or were checked and need no paint.
-(defun srj:repaint-owner (owner extents appearance / axis model paintable spans entity scheme legacy)
+(defun srj:repaint-owner (owner extents appearance / axis model paintable spans entity scheme)
   (if (and appearance (setq axis (handent owner)) (sr:model-valid-p (setq model (sr:model axis))))
     (progn
       (setq entity (car appearance) scheme (sr:style-scheme entity)
-            legacy (vl-some '(lambda (obj)
-              (not (sr:extent (cdadr (assoc -3 (entget obj '("SR-ROAD-STYLE"))))))) appearance)
             paintable (sr:paintable-spans axis model owner)
             spans paintable)
-      (if (and spans (not legacy) (not (member nil extents)))
+      (if (and spans (not (member nil extents)))
         (setq spans (vl-remove-if-not
           '(lambda (span) (vl-some '(lambda (range) (sr:ranges-overlap-p range span)) extents))
           spans)))
@@ -3404,7 +3419,7 @@ Could not save the corridor data on alignment "
 
 (defun srj:apply (first second plan ranges-a ranges-b / *error* doc undo first-changed second-changed
                   arc fillet appearance erased entity owner-a owner-b sr:new extents-a extents-b old-a old-b
-                  repainted)
+                  repaint-a repaint-b repainted)
   (defun *error* (msg)
     (if arc (entdel arc))
     (foreach entity sr:new (if (entget entity) (entdel entity)))
@@ -3418,11 +3433,11 @@ Could not save the corridor data on alignment "
   (setq owner-a (cdr (assoc 1005 (nth 4 first)))
         owner-b (cdr (assoc 1005 (nth 4 second))))
   (if owner-a
-    (setq extents-a (srj:owner-extents owner-a first second)
-          old-a (srj:affected-appearance owner-a extents-a)))
+    (setq repaint-a (srj:affected-appearance owner-a (srj:owner-extents owner-a first second))
+          extents-a (car repaint-a) old-a (cadr repaint-a)))
   (if (and owner-b (not (equal owner-a owner-b)))
-    (setq extents-b (srj:owner-extents owner-b first second)
-          old-b (srj:affected-appearance owner-b extents-b)))
+    (setq repaint-b (srj:affected-appearance owner-b (srj:owner-extents owner-b first second))
+          extents-b (car repaint-b) old-b (cadr repaint-b)))
   (setq appearance (append old-a old-b))
   (if (not (vl-every 'sr:writable-p appearance))
     (progn (princ "\nUnlock the road fill and marking layers first.") (exit)))
@@ -3796,22 +3811,49 @@ Could not save the corridor data on alignment "
     (sr:draft-offset-path sr:preview-frames first))
 )
 
-(defun sr:style-line (points width layer / point vertices)
-  (if sr:appearance-preview
-    (sr:preview-path points layer)
+;; Vertices have the form (point . bulge). The width is constant even through
+;; a change in the lateral offset of the marking.
+(defun sr:style-line (vertices width layer linetype ltscale / vertex point data entity)
+  (foreach vertex vertices
+    (setq point (car vertex)
+          data (cons (cons 42 (cdr vertex))
+                     (cons (cons 10 (list (car point) (cadr point))) data))))
+  (if (entmake (append
+                 (list '(0 . "LWPOLYLINE") '(100 . "AcDbEntity") (cons 8 layer))
+                 (if linetype (list (cons 6 linetype) (cons 48 ltscale)))
+                 (list '(100 . "AcDbPolyline") (cons 90 (length vertices))
+                       (cons 70 (if linetype 128 0)) (cons 43 width)
+                       (cons 38 (caddr (caar vertices))))
+                 (reverse data)))
     (progn
-      (foreach point points
-        (setq vertices (cons (cons 10 (list (car point) (cadr point))) vertices)))
-      (if (entmake (append
-                     (list '(0 . "LWPOLYLINE") '(100 . "AcDbEntity") (cons 8 layer)
-                           '(100 . "AcDbPolyline") (cons 90 (length points)) '(70 . 0)
-                           (cons 43 width) (cons 38 (caddr (car points))))
-                     (reverse vertices)))
-        (progn
-          (setq point (sr:style-track))
-          (if sr:appearance-lines (ssadd point sr:appearance-lines))
-          point)
-        (exit))))
+      (setq entity (sr:style-track))
+      (if sr:appearance-lines (ssadd entity sr:appearance-lines))
+      entity)
+    (progn (princ "\nAutoCAD could not create a road marking.") (exit)))
+)
+
+;; Keep the dash and gap in metres. An entity scale converts the whole pattern
+;; into drawing coordinates. Reuse matching definitions without changing any
+;; already used by another corridor.
+(defun sr:marking-linetype (dash gap / name entity record index pattern)
+  (setq index 1 pattern (list (cons 49 dash) (cons 49 (- gap)))
+        name "SR-MARK-DASH-1")
+  (while (and (setq entity (tblobjname "LTYPE" name)
+                    record (if entity (entget entity)))
+              (not (and (equal (cdr (assoc 73 record)) 2)
+                        (equal (vl-remove-if-not '(lambda (item) (= (car item) 49)) record) pattern)
+                        (not (vl-some '(lambda (item) (and (= (car item) 74) (/= (cdr item) 0))) record)))))
+    (setq index (1+ index) name (strcat "SR-MARK-DASH-" (itoa index))))
+  (if (or record
+          (and (entmake
+                 (list '(0 . "LTYPE") '(100 . "AcDbSymbolTableRecord")
+                       '(100 . "AcDbLinetypeTableRecord") (cons 2 name) '(70 . 0)
+                       '(3 . "Smart Road lane marking") '(72 . 65) '(73 . 2)
+                       (cons 40 (+ dash gap)) (car pattern) '(74 . 0)
+                       (cadr pattern) '(74 . 0)))
+               (tblsearch "LTYPE" name)))
+    name
+    (progn (princ "\nAutoCAD could not create the Smart Road linetype.") (exit)))
 )
 
 (defun sr:style-material (kind)
@@ -3824,8 +3866,6 @@ Could not save the corridor data on alignment "
 
 (defun sr:style-dash-ranges (start finish dash gap / period base first last ranges)
   (setq period (+ dash gap) base (* period (fix (/ start period))))
-  (if (> (/ (- finish base) period) 10000.0)
-    (progn (princ "\nToo many dashes for one span. Verify INSUNITS or split the alignment.") (exit)))
   (while (< base finish)
     (setq first (max start base) last (min finish (+ base dash)))
     (if (> (- last first) 1e-6) (setq ranges (cons (list first last) ranges)))
@@ -3837,8 +3877,8 @@ Could not save the corridor data on alignment "
   (mapcar '(lambda (x y) (+ x (* ratio (- y x)))) a b)
 )
 
-;; Split the actual painted path. Keep the finishing phase for a matching
-;; boundary at the next span, including across a widening or taper.
+;; The transient preview approximates the dashes and keeps their phase
+;; between spans. Saved markings use native linetype generation.
 (defun sr:style-dash-prelude (axis start finish first last yellow / origin offset previous data points total)
   (setq origin sr:appearance-original-start total 0.0)
   (if (and axis origin (> start origin))
@@ -3857,51 +3897,114 @@ Could not save the corridor data on alignment "
   total
 )
 
-(defun sr:style-stripe (axis stations start finish first last dashed yellow
-                        / scale layer width points lengths total pieces ranges dash gap a b len
-                          base lo hi path previous key radius factor interval remaining)
+(defun sr:preview-dashed-stripe (axis stations start finish first last yellow points color
+                               / scale lengths total pieces ranges dash gap a b len
+                                 base lo hi path previous key radius factor interval remaining)
   (setq scale (sr:unit-scale)
-        layer (cond (sr:appearance-preview (if yellow 2 7))
-                    (yellow (sr:style-layer "SR-MARK-YELLOW" '(244 192 54)))
-                    (T (sr:style-layer "SR-MARK-WHITE" '(248 247 240))))
-        width (* (car sr:appearance-dimensions) scale)
-        points (sr:style-vertices axis stations start finish first last))
-  (if (not dashed)
-    (sr:style-line points width layer)
-    (progn
-      (setq key (list start first yellow) previous (assoc key sr:dash-phases)
-            base (if previous (cdr previous) (sr:style-dash-prelude axis start finish first last yellow))
-            total base)
-      (if (and axis (equal first last 1e-10) (equal "ARC" (cdr (assoc 0 (entget axis)))))
-        (setq radius (cdr (assoc 40 (entget axis))) factor (/ (- radius first) radius)))
-      (setq lengths stations)
-      (while (cdr points)
-        (setq a (car points) b (cadr points)
-              len (if factor (* factor (- (cadr lengths) (car lengths))) (distance a b)))
-        (if (> len 1e-10)
-          (setq pieces (cons (list total (+ total len) a b) pieces) total (+ total len)))
-        (setq points (cdr points) lengths (cdr lengths)))
-      (setq sr:dash-phases (cons (cons (list finish last yellow) total) sr:dash-phases)
-            pieces (reverse pieces)
-            dash (* (cadr sr:appearance-dimensions) scale)
-            gap (* (caddr sr:appearance-dimensions) scale)
-            ;; Keep cursor tracking responsive on long alignments.
-            ranges (if (or (not sr:appearance-preview) (<= (- total base) (* 500 (+ dash gap))))
-                     (sr:style-dash-ranges base total dash gap)))
-      (foreach interval ranges
-        (while (and pieces (<= (cadar pieces) (car interval))) (setq pieces (cdr pieces)))
-        (setq path nil)
-        (while (and pieces (< (caar pieces) (cadr interval)))
-          (setq a (caddar pieces) b (nth 3 (car pieces)) base (caar pieces)
-                len (- (cadar pieces) base)
-                lo (max base (car interval)) hi (min (cadar pieces) (cadr interval)))
-          (if (not path) (setq path (list (sr:interpolate a b (/ (- lo base) len)))))
-          (setq path (cons (sr:interpolate a b (/ (- hi base) len)) path))
-          (if (<= (cadar pieces) (cadr interval)) (setq pieces (cdr pieces))
-            (setq remaining pieces pieces nil)))
-        (if (cdr path) (sr:style-line (reverse path) width layer))
-        (if remaining (setq pieces remaining remaining nil)))))
+        key (list start first yellow) previous (assoc key sr:dash-phases)
+        base (if previous (cdr previous) (sr:style-dash-prelude axis start finish first last yellow))
+        total base)
+  (if (and axis (equal first last 1e-10) (equal "ARC" (cdr (assoc 0 (entget axis)))))
+    (setq radius (cdr (assoc 40 (entget axis))) factor (/ (- radius first) radius)))
+  (setq lengths stations)
+  (while (cdr points)
+    (setq a (car points) b (cadr points)
+          len (if factor (* factor (- (cadr lengths) (car lengths))) (distance a b)))
+    (if (> len 1e-10)
+      (setq pieces (cons (list total (+ total len) a b) pieces) total (+ total len)))
+    (setq points (cdr points) lengths (cdr lengths)))
+  (setq sr:dash-phases (cons (cons (list finish last yellow) total) sr:dash-phases)
+        pieces (reverse pieces)
+        dash (* (cadr sr:appearance-dimensions) scale)
+        gap (* (caddr sr:appearance-dimensions) scale)
+        ;; Keep cursor tracking responsive on long alignments.
+        ranges (if (<= (- total base) (* 500 (+ dash gap)))
+                 (sr:style-dash-ranges base total dash gap)))
+  (foreach interval ranges
+    (while (and pieces (<= (cadar pieces) (car interval))) (setq pieces (cdr pieces)))
+    (setq path nil)
+    (while (and pieces (< (caar pieces) (cadr interval)))
+      (setq a (caddar pieces) b (nth 3 (car pieces)) base (caar pieces)
+            len (- (cadar pieces) base)
+            lo (max base (car interval)) hi (min (cadar pieces) (cadr interval)))
+      (if (not path) (setq path (list (sr:interpolate a b (/ (- lo base) len)))))
+      (setq path (cons (sr:interpolate a b (/ (- hi base) len)) path))
+      (if (<= (cadar pieces) (cadr interval)) (setq pieces (cdr pieces))
+        (setq remaining pieces pieces nil)))
+    (if (cdr path) (sr:preview-path (reverse path) color))
+    (if remaining (setq pieces remaining remaining nil)))
 )
+
+(defun sr:marking-vertices (axis stations start finish first last / radius angle middle)
+  (if (and (equal first last (sr:tol 1e-10))
+           (equal (cdr (assoc 0 (entget axis))) "ARC")
+           (setq radius (cdr (assoc 40 (entget axis)))))
+    (progn
+      (setq angle (/ (- finish start) radius))
+      ;; Split sweeps larger than a semicircle to keep the bulges bounded.
+      (if (> angle pi)
+        (progn
+          (setq middle (* 0.5 (+ start finish)) angle (/ angle 8.0))
+          (list (cons (sr:offset-at axis start first) (/ (sin angle) (cos angle)))
+                (cons (sr:offset-at axis middle first) (/ (sin angle) (cos angle)))
+                (cons (sr:offset-at axis finish last) 0.0)))
+        (progn
+          (setq angle (/ angle 4.0))
+          (list (cons (sr:offset-at axis start first) (/ (sin angle) (cos angle)))
+                (cons (sr:offset-at axis finish last) 0.0)))))
+    (mapcar '(lambda (point) (cons point 0.0))
+            (sr:style-vertices axis stations start finish first last)))
+)
+
+;; A run is (start finish layer reversed-vertices). Join only touching
+;; station intervals whose marking endpoints also touch on the same layer.
+(defun sr:collect-marking-run (start finish layer vertices / previous tolerance)
+  (setq tolerance (sr:tol 1e-7)
+        previous (vl-some
+          '(lambda (run)
+             (if (and (= (cadr run) start) (equal (caddr run) layer)
+                      (equal (caar vertices) (caar (cadddr run)) tolerance))
+               run))
+          sr:marking-runs))
+  (setq sr:marking-runs
+    (if previous
+      (cons (list (car previous) finish layer
+                  (append (reverse vertices) (cdr (cadddr previous))))
+            (vl-remove previous sr:marking-runs))
+      (cons (list start finish layer (reverse vertices)) sr:marking-runs)))
+)
+
+(defun sr:style-stripe (axis stations start finish first last dashed yellow / color layer)
+  (if sr:appearance-preview
+    (progn
+      (setq color (if yellow 2 7))
+      (if dashed
+        (sr:preview-dashed-stripe axis stations start finish first last yellow
+          (sr:style-vertices axis stations start finish first last) color)
+        (sr:preview-path (sr:style-vertices axis stations start finish first last) color)))
+    (progn
+      (setq layer (if yellow
+                    (sr:style-layer "SR-MARK-YELLOW" '(244 192 54))
+                    (sr:style-layer "SR-MARK-WHITE" '(248 247 240))))
+      (if dashed
+        (sr:collect-marking-run start finish layer
+          (sr:marking-vertices axis stations start finish first last))
+        (sr:style-line
+          (mapcar '(lambda (point) (cons point 0.0)) (sr:style-vertices axis stations start finish first last))
+          (* (car sr:appearance-dimensions) (sr:unit-scale)) layer nil nil))))
+)
+
+(defun sr:render-marking-runs (runs / linetype scale width run sr:appearance-span)
+  (if runs
+    (progn
+      (setq linetype (sr:marking-linetype (cadr sr:appearance-dimensions) (caddr sr:appearance-dimensions))
+            scale (/ (sr:unit-scale) (getvar "LTSCALE"))
+            width (* (car sr:appearance-dimensions) (sr:unit-scale)))
+      (foreach run (reverse runs)
+        (setq sr:appearance-span (list (car run) (cadr run)))
+        (sr:style-line (reverse (cadddr run)) width (caddr run) linetype scale))))
+)
+
 (defun sr:style-road-band-p (kind)
   (member kind '("Lane" "Bus" "BRT"))
 )
@@ -3997,7 +4100,7 @@ Could not save the corridor data on alignment "
     (sr:style-center axis stations span from to half)
     (if (and sr:style-skipped (not sr:appearance-preview))
       (princ (strcat "\nMarking omitted where it does not fit on pavement, stations "
-                     (rtos start 2 4) " to " (rtos finish 2 4) "."))))
+                     (sr:length-summary start) " to " (sr:length-summary finish) "."))))
 )
 
 (defun sr:style-owned (owner / set index entity data result)
@@ -4047,11 +4150,13 @@ Could not save the corridor data on alignment "
 )
 
 (defun sr:style-render (axis spans owner scheme sr:appearance-dimensions
-                        / sr:appearance-owner sr:appearance-scheme sr:appearance-hatches sr:appearance-lines)
+                        / sr:appearance-owner sr:appearance-scheme sr:appearance-hatches sr:appearance-lines
+                          sr:marking-runs)
   (setq sr:appearance-owner owner sr:appearance-scheme scheme sr:appearance-hatches (ssadd) sr:appearance-lines (ssadd))
   (sr:check-paint-layers spans scheme)
   (regapp "SR-ROAD-STYLE")
   (sr:style-spans axis spans)
+  (sr:render-marking-runs sr:marking-runs)
   (if (> (sslength sr:appearance-hatches) 0)
     (vl-cmdf "_.DRAWORDER" sr:appearance-hatches "" "_Front"))
   (if (> (sslength sr:appearance-lines) 0)
