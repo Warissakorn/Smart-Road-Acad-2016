@@ -1776,8 +1776,108 @@
   (sr:shape origin direction (list (list x1 y1) (list x2 y1) (list x2 y2) (list x1 y2)) T layer)
 )
 
-(defun sr:plan (kind / origin point direction length width count step x y corner approach radius stem
-                      opening angle theta index intersection layer half quadrant fill scale fillet u v)
+;; Plan features: sr:plan asks for the insertion frame and dimensions, then a
+;; sr:draw-* function builds the geometry from those values alone.
+
+(defun sr:draw-crosswalk (origin direction width length count / step layer fill x)
+  (setq step (/ width count)
+        layer (sr:layer "SR-CROSSWALK" 7)
+        fill (sr:style-layer "SR-MARK-CROSSWALK" '(248 247 240))
+        x 0.0)
+  (repeat count
+    (sr:box origin direction x (- (/ length 2.0)) (+ x (* step 0.55)) (/ length 2.0) layer)
+    (sr:style-solid
+      (list (sr:local origin direction x (- (/ length 2.0)))
+            (sr:local origin direction (+ x (* step 0.55)) (- (/ length 2.0)))
+            (sr:local origin direction (+ x (* step 0.55)) (/ length 2.0))
+            (sr:local origin direction x (/ length 2.0)))
+      fill)
+    (setq x (+ x step)))
+)
+
+(defun sr:draw-pad (kind origin direction length width / half layer corner)
+  (setq half (/ width 2.0)
+        layer (sr:layer (strcat "SR-" (strcase kind))
+                  (if (member kind '("Stop" "Platform")) 5 3)))
+  (cond
+    ((equal kind "Island")
+     (setq corner (min half (* length 0.25)))
+     (sr:shape origin direction
+       (list '(0.0 0.0) (list corner (- half)) (list (- length corner) (- half))
+             (list length 0.0) (list (- length corner) half) (list corner half))
+       T layer))
+    (T
+     (sr:box origin direction 0.0 (- half) length half layer)
+     (if (equal kind "Ramp")
+       (progn
+         (sr:shape origin direction (list (list 0.0 (- half)) (list length half)) nil layer)
+         (sr:shape origin direction (list (list 0.0 half) (list length (- half))) nil layer)))
+     (if (equal kind "Stop")
+       (sr:circle (sr:local origin direction 0.0 (+ half (sr:default 'marker-offset))) (sr:default 'marker-radius) layer))))
+)
+
+;; WIDTH is negative to widen to the right.
+(defun sr:draw-turn-lane (origin direction width length approach / layer)
+  (setq layer (sr:layer "SR-TURN-LANE" 2))
+  (sr:shape origin direction
+    (list '(0.0 0.0) (list approach width) (list (+ approach length) width)) nil layer)
+  (sr:shape origin direction (list '(0.0 0.0) (list (+ approach length) 0.0)) nil layer)
+)
+
+(defun sr:draw-junction (kind origin direction width approach corner / half stem layer u v fillet)
+  (setq half (/ width 2.0)
+        stem (+ half approach)
+        layer (sr:layer "SR-JUNCTION" 2))
+  (foreach quadrant '((1 1) (-1 1) (-1 -1) (1 -1))
+    (if (or (equal kind "Cross") (= 1 (cadr quadrant)))
+      (if (> corner 0.0)
+        (progn
+          (setq u (sr:local '(0.0 0.0 0.0) direction (car quadrant) 0.0)
+                v (sr:local '(0.0 0.0 0.0) direction 0.0 (cadr quadrant))
+                fillet (srj:fillet
+                  (sr:local origin direction (* half (car quadrant)) (* half (cadr quadrant)))
+                  u v corner))
+          (sr:plan-geometry 'sr:poly
+            (list (list (sr:local origin direction (* stem (car quadrant)) (* half (cadr quadrant)))
+                        (car fillet)) nil layer))
+          (sr:plan-geometry 'sr:poly
+            (list (list (cadr fillet)
+                        (sr:local origin direction (* half (car quadrant)) (* stem (cadr quadrant))))
+                  nil layer))
+          (sr:plan-geometry 'sr:arc
+            (list (caddr fillet) corner (cadddr fillet) (nth 4 fillet) layer)))
+        (sr:shape origin direction
+          (mapcar '(lambda (pt) (mapcar '* pt quadrant))
+            (list (list stem half) (list half half) (list half stem)))
+          nil layer))))
+  (if (equal kind "Tee")
+    (sr:shape origin direction (list (list (- stem) (- half)) (list stem (- half))) nil layer))
+)
+
+(defun sr:roundabout-fits-p (radius width opening)
+  (and (< width radius) (< opening (* radius (sqrt 2.0))))
+)
+
+(defun sr:draw-roundabout (origin direction radius width opening approach
+                           / layer angle half intersection theta index stem)
+  (setq layer (sr:layer "SR-ROUNDABOUT" 2)
+        angle (atan (cadr direction) (car direction))
+        half (* 0.5 opening)
+        intersection (sqrt (- (* radius radius) (* half half)))
+        theta (atan half intersection)
+        index 0)
+  (sr:plan-geometry 'sr:circle (list origin (- radius width) layer))
+  (repeat 4
+    (setq stem (+ angle (* index (/ pi 2.0))))
+    (sr:plan-geometry 'sr:arc (list origin radius (rem (+ stem theta (* 2.0 pi)) (* 2.0 pi))
+            (rem (+ stem (/ pi 2.0) (- theta) (* 2.0 pi)) (* 2.0 pi)) layer))
+    (foreach y (list half (- half))
+      (sr:shape origin (list (cos stem) (sin stem) 0.0)
+        (list (list intersection y) (list (+ radius approach) y)) nil layer))
+    (setq index (1+ index)))
+)
+
+(defun sr:plan (kind / origin point direction length width count approach radius opening corner scale)
   (if (and (setq origin (getpoint "\nFeature insertion point: "))
            (setq point (getpoint origin "\nPick feature direction: ")))
     (progn
@@ -1801,116 +1901,38 @@
                               (rtos (/ width scale) 2 3) " m, depth " (rtos (/ length scale) 2 3) " m."))
                (initget "Yes No")
                (if (not (equal "Yes" (getkword "\nKeep these dimensions [Yes/No] <No>: "))) (exit))))
-           (setq count (max 1 (min 200 count))
-                 step (/ width count)
-                 layer (sr:layer "SR-CROSSWALK" 7)
-                 fill (sr:style-layer "SR-MARK-CROSSWALK" '(248 247 240))
-                 x 0.0)
-           (repeat count
-             (sr:box origin direction x (- (/ length 2.0)) (+ x (* step 0.55)) (/ length 2.0) layer)
-             (sr:style-solid
-               (list (sr:local origin direction x (- (/ length 2.0)))
-                     (sr:local origin direction (+ x (* step 0.55)) (- (/ length 2.0)))
-                     (sr:local origin direction (+ x (* step 0.55)) (/ length 2.0))
-                     (sr:local origin direction x (/ length 2.0)))
-               fill)
-             (setq x (+ x step))))
+           (sr:draw-crosswalk origin direction width length (max 1 (min 200 count))))
           ((member kind '("Island" "Ramp" "Stop" "Platform"))
-           (setq scale (sr:unit-scale)
-                 length (sr:number "Feature length"
+           (setq length (sr:number "Feature length"
                            (sr:default (cond ((equal kind "Platform") 'platform-length)
                                              ((equal kind "Stop") 'stop-length)
                                              (T 'island-length))) nil)
                  width (sr:number "Feature width"
                          (sr:default (cond ((equal kind "Platform") 'platform-width)
                                            ((equal kind "Stop") 'stop-width)
-                                           (T 'island-width))) nil)
-                 half (/ width 2.0)
-                 layer (sr:layer (strcat "SR-" (strcase kind))
-                           (if (member kind '("Stop" "Platform")) 5 3)))
-           (cond
-             ((equal kind "Island")
-              (setq corner (min half (* length 0.25)))
-              (sr:shape origin direction
-                (list '(0.0 0.0) (list corner (- half)) (list (- length corner) (- half))
-                      (list length 0.0) (list (- length corner) half) (list corner half))
-                T layer))
-             (T
-              (sr:box origin direction 0.0 (- half) length half layer)
-              (if (equal kind "Ramp")
-                (progn
-                  (sr:shape origin direction (list (list 0.0 (- half)) (list length half)) nil layer)
-                  (sr:shape origin direction (list (list 0.0 half) (list length (- half))) nil layer)))
-              (if (equal kind "Stop")
-                (sr:circle (sr:local origin direction 0.0 (+ half (sr:default 'marker-offset))) (sr:default 'marker-radius) layer)))))
+                                           (T 'island-width))) nil))
+           (sr:draw-pad kind origin direction length width))
           ((equal kind "TurnLane")
-           (setq scale (sr:unit-scale)
-                 width (sr:number "Turn lane width" (sr:default 'turn-width) nil)
+           (setq width (sr:number "Turn lane width" (sr:default 'turn-width) nil)
                  length (sr:number "Full width length" (sr:default 'turn-length) nil)
-                 approach (sr:number "Entry taper length" (sr:default 'turn-taper) nil)
-                 layer (sr:layer "SR-TURN-LANE" 2))
+                 approach (sr:number "Entry taper length" (sr:default 'turn-taper) nil))
            (initget "Left Right")
            (if (not (equal "Left" (getkword "\nWiden to [Left/Right] <Right>: "))) (setq width (- width)))
-           (sr:shape origin direction
-             (list '(0.0 0.0) (list approach width) (list (+ approach length) width)) nil layer)
-           (sr:shape origin direction (list '(0.0 0.0) (list (+ approach length) 0.0)) nil layer))
+           (sr:draw-turn-lane origin direction width length approach))
           ((member kind '("Tee" "Cross"))
-           (setq scale (sr:unit-scale)
-                 width (sr:number "Approach width" (sr:default 'approach-width) nil)
-                 half (/ width 2.0)
+           (setq width (sr:number "Approach width" (sr:default 'approach-width) nil)
                  approach (sr:number "Approach length beyond intersection" (sr:default 'approach-length) nil)
-                 corner (sr:number "Corner radius" (sr:default 'junction-radius) T)
-                 stem (+ half approach)
-                 layer (sr:layer "SR-JUNCTION" 2))
+                 corner (sr:number "Corner radius" (sr:default 'junction-radius) T))
            (if (>= corner approach)
              (progn (princ "\nCorner radius must be less than the approach length.") (exit)))
-           (foreach quadrant '((1 1) (-1 1) (-1 -1) (1 -1))
-             (if (or (equal kind "Cross") (= 1 (cadr quadrant)))
-               (if (> corner 0.0)
-                 (progn
-                   (setq u (sr:local '(0.0 0.0 0.0) direction (car quadrant) 0.0)
-                         v (sr:local '(0.0 0.0 0.0) direction 0.0 (cadr quadrant))
-                         fillet (srj:fillet
-                           (sr:local origin direction (* half (car quadrant)) (* half (cadr quadrant)))
-                           u v corner))
-                   (sr:plan-geometry 'sr:poly
-                     (list (list (sr:local origin direction (* stem (car quadrant)) (* half (cadr quadrant)))
-                                 (car fillet)) nil layer))
-                   (sr:plan-geometry 'sr:poly
-                     (list (list (cadr fillet)
-                                 (sr:local origin direction (* half (car quadrant)) (* stem (cadr quadrant))))
-                           nil layer))
-                   (sr:plan-geometry 'sr:arc
-                     (list (caddr fillet) corner (cadddr fillet) (nth 4 fillet) layer)))
-                 (sr:shape origin direction
-                   (mapcar '(lambda (pt) (mapcar '* pt quadrant))
-                     (list (list stem half) (list half half) (list half stem)))
-                   nil layer))))
-           (if (equal kind "Tee")
-             (sr:shape origin direction (list (list (- stem) (- half)) (list stem (- half))) nil layer)))
+           (sr:draw-junction kind origin direction width approach corner))
           ((equal kind "Roundabout")
-           (setq scale (sr:unit-scale)
-                 radius (sr:number "Outer radius" (sr:default 'roundabout-radius) nil)
+           (setq radius (sr:number "Outer radius" (sr:default 'roundabout-radius) nil)
                  width (sr:number "Circulating width" (* radius 0.45) nil)
                  opening (sr:number "Approach width" (min (sr:default 'approach-width) radius) nil)
                  approach (sr:number "Approach length beyond circle" (sr:default 'roundabout-approach) nil))
-           (if (and (< width radius) (< opening (* radius (sqrt 2.0))))
-             (progn
-               (setq layer (sr:layer "SR-ROUNDABOUT" 2)
-                     angle (atan (cadr direction) (car direction))
-                     half (* 0.5 opening)
-                     intersection (sqrt (- (* radius radius) (* half half)))
-                     theta (atan half intersection)
-                     index 0)
-               (sr:plan-geometry 'sr:circle (list origin (- radius width) layer))
-               (repeat 4
-                 (setq stem (+ angle (* index (/ pi 2.0))))
-                 (sr:plan-geometry 'sr:arc (list origin radius (rem (+ stem theta (* 2.0 pi)) (* 2.0 pi))
-                         (rem (+ stem (/ pi 2.0) (- theta) (* 2.0 pi)) (* 2.0 pi)) layer))
-                 (foreach y (list half (- half))
-                   (sr:shape origin (list (cos stem) (sin stem) 0.0)
-                     (list (list intersection y) (list (+ radius approach) y)) nil layer))
-                 (setq index (1+ index))))
+           (if (sr:roundabout-fits-p radius width opening)
+             (sr:draw-roundabout origin direction radius width opening approach)
              (princ "\nUse a circulating width smaller than the radius and narrower approaches.")))))
         (princ "\nPick two distinct plan points."))))
   (princ)
