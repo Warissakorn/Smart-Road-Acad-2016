@@ -10,16 +10,17 @@ from zipfile import ZipFile, ZipInfo
 ROOT = Path(__file__).resolve().parents[1]
 CONTENTS = ROOT / "SmartRoad.bundle" / "Contents"
 RIBBON_FILE = CONTENTS / "SmartRoadRibbon.cuix"
-REVISION = {"MajorVersion": "20", "MinorVersion": "1", "UserVersion": "1"}
+REVISION = {"MajorVersion": "20", "MinorVersion": "1", "UserVersion": "2"}
 XML_SCHEMA = {
     "xmlns:xsd": "http://www.w3.org/2001/XMLSchema",
     "xmlns:xsi": "http://www.w3.org/2001/XMLSchema-instance",
 }
 PANELS = {
-    "Roads": ("SRCREATEROAD",),
-    "Walk & Transit": ("SRWALK", "SRTRANSIT"),
-    "Junctions": ("SRJUNCTION", "SRCONNECT"),
-    "Edit & Report": ("SREDIT", "SRSECTION", "SRSTYLE", "SRQUANTITY", "SMARTROAD"),
+    "ROADS": ("Roads", ("SRDRAWROAD", "SRBUILDROAD", "SRPROFILE")),
+    "CORRIDOR": ("Corridor", ("SREDIT", "SRSECTION")),
+    "JUNCTIONS": ("Junctions", ("SRJUNCTION", "SRCONNECT")),
+    "WALK_TRANSIT": ("Walk & Transit", ("SRWALK", "SRTRANSIT")),
+    "FINISH": ("Finish", ("SRSTYLE",)),
 }
 EMPTY_SECTIONS = (
     "AcceleratorRoot", "DigitizerButtonRoot", "DoubleClickRoot", "ImageMenuRoot",
@@ -38,7 +39,7 @@ def toolbar_commands():
         if command in commands or not re.search(rf"^\(defun c:{command}\s", source, re.M | re.I):
             raise ValueError(f"Duplicate or undefined command: {command}")
         commands[command] = (label, help_text, macro, icon)
-    ordered = [command for group in PANELS.values() for command in group]
+    ordered = [command for _, group in PANELS.values() for command in group]
     if len(ordered) != len(commands) or set(ordered) != commands.keys():
         raise ValueError("Ribbon panels must cover all Smart Road toolbar commands exactly once.")
     return commands
@@ -70,8 +71,8 @@ def create_package():
     ET.SubElement(tab, "Name").text = "Smart Road"
 
     images = {}
-    for index, (panel_label, items) in enumerate(PANELS.items(), start=1):
-        panel_id = f"SR_PANEL_{index}"
+    for key, (panel_label, items) in PANELS.items():
+        panel_id = f"SR_PANEL_{key}"
         panel = ET.SubElement(panels, "RibbonPanelSource", UID=panel_id, Text=panel_label,
                               HiddenInEditor="false")
         ET.SubElement(panel, "ModifiedRev", REVISION)
@@ -115,7 +116,7 @@ def create_package():
     metadata = ET.Element("MenuPackageParts")
     for name in (*parts, "VirtualMNRRoot", "Menu_Package_Info.xml", *images):
         ET.SubElement(metadata, "PartData", PartData_Name=f"/{name}",
-                      PartData_Modified="2026-11-25T00:00:00.0000000+00:00")
+                      PartData_Modified="2026-11-26T00:00:00.0000000+00:00")
     content_types = ET.Element("Types", xmlns="http://schemas.openxmlformats.org/package/2006/content-types")
     for extension, mime in (
         ("cui", "text/xml"), ("xml", "text/xml"), ("bmp", "image/bmp"),
@@ -135,7 +136,7 @@ def create_package():
 
 
 def zip_entry(name):
-    entry = ZipInfo(name, (2026, 11, 25, 0, 0, 0))
+    entry = ZipInfo(name, (2026, 11, 26, 0, 0, 0))
     entry.create_system = 0
     return entry
 

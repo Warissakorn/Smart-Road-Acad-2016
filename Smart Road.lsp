@@ -7,7 +7,8 @@
 ;;;   RNET  - Convert multiple centerlines (Line/Arc/Polyline) to road network
 ;;;   SRROAD, SRWALK, SRTRANSIT, SRJUNCTION, SREDIT - 2D corridor and plan tools
 ;;;   SRQUICK, SRPROFILE, SRSECTION - Quick corridor build, profile and section edit
-;;;   SRCONNECT, SRQUANTITY - Connect existing road edges and measure 2D quantities
+;;;   SRDRAWROAD, SRBUILDROAD - Sketch or build roads from existing alignments
+;;;   SRCONNECT, SRSTYLE - Join existing edges and finish road surfaces
 ;;; ==========================================================================
 
 (vl-load-com)
@@ -600,7 +601,8 @@
          (setq index 0)
          (repeat (sslength ss)
            (setq en (ssname ss index) index (1+ index))
-           (if (and (droad:planar-center-p en)
+           (if (and (not (assoc -3 (entget en '("SR-CORRIDOR" "SR-CORRIDOR-EDGE" "SR-ROAD-STYLE" "SR-TRANSIT-ANCHOR"))))
+                    (droad:planar-center-p en)
                     (not (droad:get-width-xdata en nil)))
              (progn
                (if (= 0 processed) (droad:ensure-layers doc))
@@ -750,77 +752,69 @@
 )
 
 (setq sr:toolbar-spec
-  '(("Smart Road Settings" "Open the Smart Road settings dialog" "^C^CSMARTROAD " "SmartRoadSettings")
-    ("Create Road" "Draw or select alignments and build editable roads" "^C^CSRCREATEROAD " "SmartRoadCorridor")
-    ("Walkway" "Build a walkway, crosswalk, refuge island or ramp plan symbol" "^C^CSRWALK " "SmartRoadWalk")
-    ("Transit" "Build bus and rail corridors, stops and platforms" "^C^CSRTRANSIT " "SmartRoadTransit")
-    ("Junction" "Draw a tee, crossing, roundabout or turn lane" "^C^CSRJUNCTION " "SmartRoadJunction")
-    ("Edit Corridor" "Edit, preview and rebuild a corridor" "^C^CSREDIT " "SmartRoadEdit")
-    ("Pick Section" "Pick two points to change a corridor section" "^C^CSRSECTION " "SmartRoadSection")
-    ("Connect Edges" "Trim two road edges into a junction corner" "^C^CSRCONNECT " "SmartRoadConnect")
-    ("Quantities" "Report lengths and plan areas in the drawing or CSV" "SRQUANTITY " "SmartRoadQuantity")
-    ("Road Appearance" "Fill road surfaces and generate lane markings" "^C^CSRSTYLE " "SmartRoadStyle")))
+  '(("Draw Road" "Sketch an alignment with a live road preview" "^C^CSRDRAWROAD " "SmartRoadDraw")
+    ("Build from Alignments" "Build roads from selected lines, arcs and polylines" "SRBUILDROAD " "SmartRoadSelect")
+    ("Cross Sections" "Set the active cross section or save and load named templates" "^C^CSRPROFILE " "SmartRoadCorridor")
+    ("Edit Corridor" "Change the base section, edit stations or rebuild after an alignment edit" "^C^CSREDIT " "SmartRoadEdit")
+    ("Edit by Points" "Pick two points to add or change a section of a corridor" "^C^CSRSECTION " "SmartRoadSection")
+    ("Junction Layout" "Lay out a tee, cross junction, roundabout or turn lane" "^C^CSRJUNCTION " "SmartRoadJunction")
+    ("Join Road Edges" "Preview and join two edges at one junction corner" "^C^CSRCONNECT " "SmartRoadConnect")
+    ("Pedestrian Layout" "Build walkways or place a crossing, refuge or ramp symbol" "^C^CSRWALK " "SmartRoadWalk")
+    ("Transit Layout" "Build bus or rail corridors and place stops or platforms" "^C^CSRTRANSIT " "SmartRoadTransit")
+    ("Surface & Markings" "Apply or clear pavement fills and lane markings" "^C^CSRSTYLE " "SmartRoadStyle")))
 
-(defun droad:toolbar-buttons (toolbar folder start / index spec button base)
-  (setq index start)
-  (foreach spec (sr:drop start sr:toolbar-spec)
+(defun droad:toolbar-buttons (toolbar folder index / spec button base)
+  (foreach spec sr:toolbar-spec
     (setq button (vla-AddToolbarButton toolbar index (car spec) (cadr spec)
                                        (caddr spec) :vlax-false)
           base (strcat folder "\\" (cadddr spec)))
     (vla-SetBitmaps button (strcat base "16.bmp") (strcat base "32.bmp"))
-    (setq index (1+ index))
-  )
-  (if (= start 0)
-    (progn
-      (vla-Dock toolbar acToolbarDockTop)
-      (vla-put-Visible toolbar :vlax-true)))
+    (setq index (1+ index)))
 )
 
-(defun droad:legacy-toolbar-p (toolbar / count index matches)
-  (setq count (vla-get-Count toolbar))
-  (if (and (< count (length sr:toolbar-spec)) (> count 0))
-    (progn
-      (setq index 0 matches T)
-      (repeat count
-        (setq matches (and matches
-                           (equal (vla-get-Name (vla-Item toolbar index))
-                                  (car (nth index sr:toolbar-spec))))
-              index (1+ index)))
-      matches))
+(defun droad:toolbar-current-p (toolbar / index matches spec)
+  (setq index 0 matches (= (vla-get-Count toolbar) (length sr:toolbar-spec)))
+  (foreach spec sr:toolbar-spec
+    (if matches
+      (setq matches (equal (vla-get-Name (vla-Item toolbar index)) (car spec))
+            index (1+ index))))
+  matches
 )
 
-(defun droad:toolbar (show / groups toolbars toolbar folder icon result create start)
+(defun droad:toolbar (show / groups toolbars toolbar folder icon result create start index)
   (setq groups (vla-get-MenuGroups (vlax-get-acad-object))
         toolbars (vla-get-Toolbars (vla-Item groups 0))
         toolbar (vl-catch-all-apply 'vla-Item (list toolbars "Smart Road"))
         create (vl-catch-all-error-p toolbar))
-  (if (or create (droad:legacy-toolbar-p toolbar))
-    (progn
-      (setq folder (droad:toolbar-icons))
-      (if (and show (not folder))
-        (progn
-          (setq icon (getfiled "Locate SmartRoadStyle16.bmp in the Icons folder"
-                               "SmartRoadStyle16.bmp" "bmp" 0))
-          (if icon (setq folder (vl-filename-directory icon)))
-        )
-      )
-      (if folder
-        (progn
-          (setq start (if create 0 (vla-get-Count toolbar)))
-          (if create (setq toolbar (vla-Add toolbars "Smart Road")))
-          (setq result (vl-catch-all-apply 'droad:toolbar-buttons (list toolbar folder start)))
-          (if (vl-catch-all-error-p result)
-            (progn
-              (if create
-                (vla-Delete toolbar)
-                (while (> (vla-get-Count toolbar) start)
-                  (vla-Delete (vla-Item toolbar (1- (vla-get-Count toolbar))))))
-              (princ (strcat "\nSmart Road toolbar: " (vl-catch-all-error-message result)))))))
-    )
-  )
-  (if (and show (not (vl-catch-all-error-p toolbar))
-           (not (and create (vl-catch-all-error-p result))))
-    (vla-put-Visible toolbar :vlax-true))
+  (cond
+    ((and create (not show)) nil)
+    ((and (not create) (droad:toolbar-current-p toolbar))
+     (if show (vla-put-Visible toolbar :vlax-true)))
+    (T
+     (setq folder (droad:toolbar-icons))
+     (if (and show (not folder))
+       (if (setq icon (getfiled "Locate SmartRoadStyle16.bmp in the Icons folder"
+                              "SmartRoadStyle16.bmp" "bmp" 0))
+         (setq folder (vl-filename-directory icon))))
+     (if folder
+       (progn
+         (if create (setq toolbar (vla-Add toolbars "Smart Road")))
+         (setq start (vla-get-Count toolbar)
+               result (vl-catch-all-apply 'droad:toolbar-buttons (list toolbar folder start)))
+         (if (vl-catch-all-error-p result)
+           (progn
+             (if create
+               (vla-Delete toolbar)
+               (while (> (vla-get-Count toolbar) start)
+                 (vla-Delete (vla-Item toolbar (1- (vla-get-Count toolbar))))))
+             (princ (strcat "\nSmart Road toolbar: " (vl-catch-all-error-message result))))
+           (progn
+             (setq index start)
+             (repeat start
+               (setq index (1- index))
+               (vla-Delete (vla-Item toolbar index)))
+             (if create (vla-Dock toolbar acToolbarDockTop))
+             (vla-put-Visible toolbar (if show :vlax-true :vlax-false))))))))
   (princ)
 )
 
@@ -971,7 +965,7 @@
   (sr:profile-template-key (getstring "\nTemplate name (letters, digits, underscores): "))
 )
 
-(defun sr:configure (profile / action key saved)
+(defun sr:configure (profile / action key saved value record)
   (sr:profile-summary profile)
   (while (progn
            (initget "Left Right Save Load Done Cancel")
@@ -988,11 +982,14 @@
                    (equal "Yes" (getkword "\nReplace saved template? [Yes/No] <No>: ")))
              (setenv key (sr:pack-profile profile))))))
       ((equal action "Load")
-       (if (and (setq key (sr:template-key)) (setq saved (getenv key))
+       (if (and (setq key (sr:template-key)) (setq value (getenv key))
                 (not (vl-catch-all-error-p
-                       (setq saved (vl-catch-all-apply 'sr:profile-ui-read-template (list saved)))))
+                       (setq saved (vl-catch-all-apply 'sr:profile-ui-read-template (list value)))))
                 (sr:profile-valid-p saved))
-         (setq profile saved)
+         (progn
+           (setq profile saved record (vl-catch-all-apply 'read (list value)))
+           (if (sr:profile-valid-p record)
+             (princ "\nOld template has no units. Check widths before saving or building.")))
          (princ "\nNo valid template with that name."))))
     (sr:profile-summary profile)
   )
@@ -1132,20 +1129,30 @@
          (droad:ccw-diff 0.0 (droad:wcs-angle center q)) layer)
 )
 
-(defun sr:sampled-offset-at (axis station offset / length pt before after a b na nb miter divisor)
+(defun sr:offset-direction (a b / na nb miter divisor)
+  (if (not a) (setq a b))
+  (if (not b) (setq b a))
+  (setq na (list (- (cadr a)) (car a) 0.0)
+        nb (list (- (cadr b)) (car b) 0.0)
+        miter (droad:unit-vec (mapcar '+ na nb))
+        divisor (apply '+ (mapcar '* miter na)))
+  (if (>= divisor 0.2)
+    (mapcar '(lambda (component) (/ component divisor)) miter))
+)
+
+(defun sr:sampled-offset-at (axis station offset / length pt before after a b direction)
   (setq length (sr:length axis)
         pt (vlax-curve-getPointAtDist axis station)
         before (vlax-curve-getPointAtDist axis (max 0.0 (- station 0.001)))
         after (vlax-curve-getPointAtDist axis (min length (+ station 0.001)))
         a (if (equal before pt 1e-10) nil (droad:unit-vec (mapcar '- pt before)))
         b (if (equal after pt 1e-10) nil (droad:unit-vec (mapcar '- after pt))))
-  (if (not a) (setq a b))
-  (if (not b) (setq b a))
-  (setq na (list (- (cadr a)) (car a) 0.0)
-        nb (list (- (cadr b)) (car b) 0.0)
-        miter (droad:unit-vec (mapcar '+ na nb))
-        divisor (max 0.2 (apply '+ (mapcar '* miter na))))
-  (mapcar '+ pt (mapcar '(lambda (component) (* component (/ offset divisor))) miter))
+  (cond
+    ((equal offset 0.0 1e-10) pt)
+    ((setq direction (sr:offset-direction a b)) (mapcar '+ pt (srj:scaled direction offset)))
+    (T (princ (strcat "\nCannot maintain the section width at the sharp bend near station "
+                      (rtos station 2 4) ". Round the alignment before building."))
+       (exit)))
 )
 
 (defun sr:offset-at (axis station offset / data point center radius)
@@ -1248,6 +1255,55 @@
     (reverse (cons (list cursor finish base nil) spans)))
 )
 
+(defun sr:profile-at-fraction (from to ratio / side sign pair inner offset bands profile)
+  (if (or (null to) (<= ratio 0.0)) from
+    (if (>= ratio 1.0) to
+      (progn
+        (foreach sign '(1.0 -1.0)
+          (setq side (if (> sign 0.0) 0 1) inner 0.0 bands nil)
+          (foreach pair (sr:pair-bands (nth side from) (nth side to) sign)
+            (setq offset (+ (* (- 1.0 ratio) (car pair)) (* ratio (cadr pair))))
+            (if (> (abs (- offset inner)) 1e-10)
+              (setq bands (cons (list (caddr pair) (abs (- offset inner))) bands)))
+            (setq inner offset))
+          (setq profile (cons (reverse bands) profile)))
+        (reverse profile))))
+)
+
+(defun sr:profile-at-station (span station)
+  (sr:profile-at-fraction (caddr span) (cadddr span)
+    (/ (- station (car span)) (float (- (cadr span) (car span)))))
+)
+
+(defun sr:ranges-overlap-p (a b)
+  (and (< (car a) (cadr b)) (< (car b) (cadr a)))
+)
+
+(defun sr:merge-ranges (ranges / range head merged)
+  (foreach range (vl-sort ranges '(lambda (a b)
+                   (if (= (car a) (car b)) (< (cadr a) (cadr b)) (< (car a) (car b)))))
+    (setq head (car merged))
+    (if (and head (<= (car range) (cadr head)))
+      (setq merged (cons (list (car head) (max (cadr head) (cadr range))) (cdr merged)))
+      (setq merged (cons range merged))))
+  (reverse merged)
+)
+
+(defun sr:span-without-ranges (span ranges / start finish range end piece result)
+  (setq start (car span) finish (cadr span))
+  (foreach range (append (sr:merge-ranges ranges) (list (list finish finish)))
+    (setq end (min finish (car range)))
+    (if (> (- end start) 1e-6)
+      (progn
+        (setq piece (list start end (sr:profile-at-station span start)
+                         (if (cadddr span) (sr:profile-at-station span end))))
+        (if (> start (+ (car span) 1e-6))
+          (setq piece (append piece (list (car span)))))
+        (setq result (cons piece result))))
+    (setq start (max start (cadr range))))
+  (reverse result)
+)
+
 (defun sr:axis-signature (axis / item text index code first second)
   (setq first 0 second 0)
   (foreach item (entget axis)
@@ -1267,14 +1323,14 @@
         to (if (cadddr span) (cadddr span) from)
         sr:envelope (max (sr:profile-envelope from) (sr:profile-envelope to))
         stations (sr:stations axis start finish)
-        spine (sr:quantity-offset-vertices axis stations start finish 0.0 0.0)
+        spine (sr:offset-vertices axis stations start finish 0.0 0.0)
         good T)
   (foreach side '(0 1)
     (setq sign (if (= side 0) 1.0 -1.0) inner spine)
     (foreach pair (sr:pair-bands (nth side from) (nth side to) sign)
       (if good
-        (setq outer (sr:quantity-offset-vertices axis stations start finish (car pair) (cadr pair))
-              good (sr:quantity-strip-area inner outer sign) inner outer))))
+        (setq outer (sr:offset-vertices axis stations start finish (car pair) (cadr pair))
+              good (sr:strip-area inner outer sign) inner outer))))
   good
 )
 
@@ -1384,7 +1440,8 @@
     T)
 )
 
-(defun sr:apply-spans (axis model spans old / *error* sr:new sr:owner sr:previewing doc undo erased entity prior written appearance scheme paintable)
+(defun sr:apply-spans (axis model spans old / *error* sr:new sr:owner sr:previewing doc undo erased entity prior written appearance scheme paintable
+                         transit all-spans)
   (defun *error* (msg)
     (foreach entity sr:new (if (entget entity) (entdel entity)))
     (foreach entity erased (if (not (entget entity)) (entdel entity)))
@@ -1395,11 +1452,14 @@
     (princ)
   )
   (setq sr:owner (cdr (assoc 5 (entget axis)))
-        appearance (sr:style-owned sr:owner))
+        appearance (sr:style-owned sr:owner)
+        transit (sr:transit-owned sr:owner))
   (cond
     ((> (strlen (vl-prin1-to-string model)) 10000)
      (princ "\nThis alignment has too much profile data. Use a separate alignment.") nil)
-    ((not (vl-every 'sr:writable-p (cons axis (append old appearance))))
+    ((vl-some '(lambda (item) (> (car (sr:extent (sr:transit-data item))) (sr:length axis))) transit)
+     (princ "\nA linked transit station is beyond the new end. Reposition the feature before rebuilding.") nil)
+    ((not (vl-every 'sr:writable-p (cons axis (append old appearance transit))))
      (princ "\nUnlock the alignment and affected corridor layers before building.") nil)
     ((/= 0 (logand 2 (getvar "UNDOCTL")))
      (princ "\nSet UNDO Control to All to group this corridor update.") nil)
@@ -1414,7 +1474,12 @@
        (progn (vla-StartUndoMark doc) (setq undo T)))
      (regapp "SR-CORRIDOR") (regapp "SR-CORRIDOR-EDGE")
      (sr:render-spans axis spans)
-     (foreach entity old
+     (if transit
+       (progn
+         (setq all-spans (sr:spans axis model))
+         (foreach entity transit
+           (sr:write-transit axis all-spans (sr:transit-data entity) (cdr (assoc 8 (entget entity)))))))
+     (foreach entity (append old transit)
        (if (entdel entity) (setq erased (cons entity erased)) (exit)))
      (if appearance
        (progn
@@ -1539,8 +1604,23 @@
   )
 )
 
+(defun sr:confirm-station-limits (axis model / length section warning)
+  (setq length (sr:length axis))
+  (foreach section (cadr model)
+    (if (> (cadr section) (+ length 1e-6))
+      (progn
+        (setq warning T)
+        (princ (strcat "\nSection " (rtos (car section) 2 4) " to " (rtos (cadr section) 2 4)
+          (if (>= (car section) length) " will be omitted." (strcat " will end at " (rtos length 2 4) ".")))))))
+  (if warning
+    (progn
+      (initget "Yes No")
+      (equal "Yes" (getkword "\nContinue with the shortened alignment [Yes/No] <No>: ")))
+    T)
+)
+
 (defun sr:edit (/ axis model mode profile regions index selected remaining)
-  (if (and (sr:modelspace-p) (setq axis (sr:pick-axis)))
+  (if (and (sr:modelspace-p) (setq axis (sr:pick-corridor)))
     (progn
       (setq model (sr:model axis))
       (if (sr:model-valid-p model)
@@ -1568,7 +1648,7 @@
                      (setq regions (sr:set-region axis remaining (caddr selected))
                            model (if regions (list (car model) regions))))))
                (setq model nil))))
-          (if (and model (sr:preview axis model)) (sr:build axis model)))
+          (if (and model (sr:confirm-station-limits axis model) (sr:preview axis model)) (sr:build axis model)))
         (princ "\nThis alignment has no editable Smart Road corridor."))))
   (princ)
 )
@@ -1628,7 +1708,14 @@
            (setq scale (sr:unit-scale)
                  width (sr:number "Crossing span across the road" (* scale 7.0) nil)
                  length (sr:number "Crossing depth along the road" (* scale 3.0) nil)
-                 count (max 1 (min 200 (fix (/ width (* scale 0.75)))))
+                 count (fix (/ width (* scale 0.75))))
+           (if (or (= 0 (getvar "INSUNITS")) (< count 1) (> count 200))
+             (progn
+               (princ (strcat "\nCheck crossing dimensions and drawing units. Span "
+                              (rtos (/ width scale) 2 3) " m, depth " (rtos (/ length scale) 2 3) " m."))
+               (initget "Yes No")
+               (if (not (equal "Yes" (getkword "\nKeep these dimensions [Yes/No] <No>: "))) (exit))))
+           (setq count (max 1 (min 200 count))
                  step (/ width count)
                  layer (sr:layer "SR-CROSSWALK" 7)
                  fill (sr:style-layer "SR-MARK-CROSSWALK" '(248 247 240))
@@ -1643,9 +1730,10 @@
                fill)
              (setq x (+ x step))))
           ((member kind '("Island" "Ramp" "Stop" "Platform"))
-           (setq length (sr:number "Feature length"
-                           (cond ((equal kind "Platform") 30.0) ((equal kind "Stop") 12.0) (T 2.0)) nil)
-                 width (sr:number "Feature width" (if (equal kind "Platform") 3.0 1.5) nil)
+           (setq scale (sr:unit-scale)
+                 length (sr:number "Feature length"
+                           (* scale (cond ((equal kind "Platform") 30.0) ((equal kind "Stop") 12.0) (T 2.0))) nil)
+                 width (sr:number "Feature width" (* scale (if (equal kind "Platform") 3.0 1.5)) nil)
                  half (/ width 2.0)
                  layer (sr:layer (strcat "SR-" (strcase kind))
                            (if (member kind '("Stop" "Platform")) 5 3)))
@@ -1663,7 +1751,7 @@
                   (sr:shape origin direction (list (list 0.0 (- half)) (list length half)) nil layer)
                   (sr:shape origin direction (list (list 0.0 half) (list length (- half))) nil layer)))
               (if (equal kind "Stop")
-                (sr:circle (sr:local origin direction 0.0 (+ half 0.45)) 0.25 layer)))))
+                (sr:circle (sr:local origin direction 0.0 (+ half (* scale 0.45))) (* scale 0.25) layer)))))
           ((equal kind "TurnLane")
            (setq scale (sr:unit-scale)
                  width (sr:number "Turn lane width" (* scale 3.25) nil)
@@ -1750,10 +1838,10 @@
   (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
   (vla-StartUndoMark doc)
   (setq undo T)
-  (if (member kind '("Tee" "Cross" "Roundabout" "TurnLane"))
+  (if (member kind '("FromRoads" "Tee" "Cross" "Roundabout" "TurnLane"))
     (progn
       (setq sr:collect-plan T sr:previewing T)
-      (sr:plan kind)
+      (if (equal kind "FromRoads") (srj:layout-from-roads) (sr:plan kind))
       (setq sr:collect-plan nil sr:previewing nil)
       (if sr:plan-items
         (progn
@@ -1789,22 +1877,236 @@
   (princ)
 )
 
-(defun c:SRTRANSIT (/ option)
-  (if (sr:modelspace-p)
+(defun sr:span-at-station (spans station)
+  (vl-some '(lambda (span)
+              (if (<= (car span) station (cadr span)) span)) (reverse spans))
+)
+
+(defun sr:alignment-direction (axis station / step before after)
+  (setq step (* 0.001 (sr:unit-scale))
+        before (vlax-curve-getPointAtDist axis (max 0.0 (- station step)))
+        after (vlax-curve-getPointAtDist axis (min (sr:length axis) (+ station step))))
+  (droad:unit-vec (mapcar '- after before))
+)
+
+(defun sr:transit-data (entity)
+  (cdadr (assoc -3 (entget entity '("SR-TRANSIT-ANCHOR"))))
+)
+
+(defun sr:transit-owned (owner / selection index entity result)
+  (if (setq selection (ssget "_X" '((410 . "Model") (-3 ("SR-TRANSIT-ANCHOR")))))
     (progn
-      (initget "Corridor Stop Platform")
-      (setq option (getkword "\nTransit [Corridor/Stop/Platform] <Corridor>: "))
-      (if (member option '("Stop" "Platform"))
-        (sr:feature option)
-        (sr:create "Transit"))))
+      (setq index 0.0)
+      (repeat (sslength selection)
+        (setq entity (ssname selection index) index (1+ index))
+        (if (equal owner (cdr (assoc 1005 (sr:transit-data entity))))
+          (setq result (cons entity result))))))
+  result
+)
+
+(defun sr:transit-frame (axis spans values / station sign clearance width span profile offset center)
+  (setq station (car values) sign (cadr values)
+        clearance (caddr values) width (nth 4 values))
+  (if (and (numberp station) (setq span (sr:span-at-station spans station)))
+    (progn
+      (setq profile (sr:profile-at-station span station)
+            offset (* sign (+ (sr:side-width profile (if (> sign 0.0) 0 1)) clearance (* 0.5 width)))
+            center (sr:offset-at axis station offset))
+      (list center (sr:alignment-direction axis station))))
+)
+
+(defun sr:write-transit (axis spans data layer / sr:owner kind values frame center direction entity half)
+  (setq kind (cdr (assoc 1000 data)) values (sr:extent data))
+  (if (not (setq frame (sr:transit-frame axis spans values)))
+    (progn (princ "\nLinked transit station is outside the current alignment.") (exit)))
+  (setq center (car frame) direction (cadr frame)
+        half (* 0.5 (nth 4 values))
+        entity (if (equal kind "Pole")
+                 (sr:circle (sr:local center direction (- (* 0.5 (cadddr values)))
+                              (* (cadr values) (+ half (* 0.45 (sr:unit-scale)))))
+                            (* 0.25 (sr:unit-scale)) layer)
+                 (sr:box center direction (- (* 0.5 (cadddr values))) (- half)
+                         (* 0.5 (cadddr values)) half layer)))
+  (if (not (and entity (entmod (append (entget entity) (list (list -3 (cons "SR-TRANSIT-ANCHOR" data)))))))
+    (progn (princ "\nCould not save the transit attachment.") (exit)))
+  entity
+)
+
+(defun sr:linked-transit (kind / *error* sr:new axis model pick station side sign gap length width values
+                                data spans frame doc undo layer entity)
+  (defun *error* (msg)
+    (redraw)
+    (foreach entity sr:new (if (entget entity) (entdel entity)))
+    (if undo (vla-EndUndoMark doc))
+    (if (and msg (not (wcmatch (strcase msg) "*CANCEL*,*QUIT*,*BREAK*")))
+      (princ (strcat "\nSmart Road: " msg)))
+    (princ))
+  (if (/= 0 (logand 2 (getvar "UNDOCTL")))
+    (princ "\nEnable UNDO (All) first.")
+    (if (and (setq axis (sr:pick-corridor))
+             (sr:model-valid-p (setq model (sr:model axis)))
+             (setq pick (getpoint "\nPick the center station of the transit feature: "))
+             (setq station (sr:station-at-pick axis pick)))
+      (progn
+        (initget "Left Right")
+        (setq side (getkword "\nSide of alignment [Left/Right] <Right>: ")
+              sign (if (equal side "Left") 1.0 -1.0)
+              gap (sr:number "Clearance from corridor edge (drawing units)" 0.0 T)
+              length (sr:number "Feature length" (* (sr:unit-scale) (if (equal kind "Stop") 12.0 30.0)) nil)
+              width (sr:number "Feature width" (* (sr:unit-scale) (if (equal kind "Stop") 1.5 3.0)) nil)
+              values (list station sign gap length width)
+              data (append (list (cons 1005 (cdr (assoc 5 (entget axis)))) (cons 1000 kind))
+                           (mapcar '(lambda (value) (cons 1040 (float value))) values))
+              spans (sr:spans axis model)
+              frame (sr:transit-frame axis spans values))
+        (if frame
+          (progn
+            (setq entity (car frame))
+            (sr:preview-path (list (vlax-curve-getPointAtDist axis station) entity) 6)
+            (sr:preview-path (mapcar '(lambda (pt)
+              (sr:local entity (cadr frame) (* (car pt) length) (* (cadr pt) width)))
+              '((-0.5 -0.5) (0.5 -0.5) (0.5 0.5) (-0.5 0.5) (-0.5 -0.5))) 3)
+            (initget "Build Cancel")
+            (if (equal "Build" (getkword "\nLinked feature preview [Build/Cancel] <Cancel>: "))
+              (progn
+                (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
+                (if (= 0 (logand 8 (getvar "UNDOCTL")))
+                  (progn (vla-StartUndoMark doc) (setq undo T)))
+                (regapp "SR-TRANSIT-ANCHOR")
+                (setq layer (sr:layer (strcat "SR-" (strcase kind)) 5))
+                (sr:write-transit axis spans data layer)
+                (if (equal kind "Stop")
+                  (sr:write-transit axis spans (subst '(1000 . "Pole") (assoc 1000 data) data) layer))
+                (if undo (vla-EndUndoMark doc))
+                (setq undo nil sr:new nil)
+                (princ "\nTransit feature linked; Edit Corridor rebuilds its position.")))
+            (redraw))))
+      (if (and axis (not (sr:model-valid-p model)))
+        (princ "\nChoose an editable Smart Road Corridor."))))
   (princ)
 )
 
+(defun c:SRTRANSIT (/ option)
+  (if (sr:modelspace-p)
+    (progn
+      (initget "Corridor LinkedStop LinkedPlatform Stop Platform")
+      (setq option (getkword "\nTransit [Corridor/LinkedStop/LinkedPlatform/Stop/Platform] <Corridor>: "))
+      (cond
+        ((equal option "LinkedStop") (sr:linked-transit "Stop"))
+        ((equal option "LinkedPlatform") (sr:linked-transit "Platform"))
+        ((member option '("Stop" "Platform")) (sr:feature option))
+        (T (sr:create "Transit")))))
+
+  (princ)
+)
+
+(defun sr:side-width (profile side)
+  (apply '+ (cons 0.0 (mapcar 'cadr (nth side profile))))
+)
+
+(defun srj:road-arm (origin tolerance / hit axis at pick position direction model span profile a b width forward)
+  (if (and (setq hit (entsel "\nPick an alignment on the side that leaves the junction: "))
+           (setq axis (sr:corridor-source (car hit)))
+           (member (cdr (assoc 0 (entget axis))) '("LINE" "ARC" "LWPOLYLINE"))
+           (droad:planar-center-p axis) (not (vlax-curve-isClosed axis))
+           (setq at (sr:station-at-wcs axis origin) pick (sr:station-at-pick axis (cadr hit)))
+           (setq position (vlax-curve-getPointAtDist axis at))
+           (equal (caddr position) (caddr origin) 1e-8)
+           (<= (distance position origin) tolerance)
+           (> (abs (- pick at)) 1e-6))
+    (progn
+      (setq direction (sr:alignment-direction axis at)
+            forward (> pick at)
+            model (sr:model axis))
+      (if (and (sr:model-valid-p model) (setq span (sr:span-at-station (sr:spans axis model) at)))
+        (setq profile (sr:profile-at-station span at)
+              a (sr:side-width profile 0)
+              b (sr:side-width profile 1))
+        (progn
+          (setq width (sr:number "Arm width (drawing units)"
+                         (droad:get-width-xdata axis (* 7.0 (sr:unit-scale))) nil)
+                a (* 0.5 width) b a)))
+      (if (not forward)
+        (setq direction (srj:scaled direction -1.0) width a a b b width))
+      (list (droad:ccw-diff 0.0 (atan (cadr direction) (car direction))) direction a b (abs (- pick at))))
+    (if hit
+      (princ "\nChoose an open horizontal alignment passing through the junction on the same level.")))
+)
+
+(defun srj:arm-corner (origin first second radius / gap u v a b far-a far-b corner fillet p q)
+  (setq gap (droad:ccw-diff (car first) (car second))
+        u (cadr first) v (cadr second)
+        a (sr:local origin u 0.0 (caddr first))
+        b (sr:local origin v 0.0 (- (cadddr second)))
+        far-a (sr:local a u (nth 4 first) 0.0)
+        far-b (sr:local b v (nth 4 second) 0.0))
+  (cond
+    ((<= gap 1e-6) nil)
+    ((>= gap (- pi 1e-7))
+     (list (if (equal a b 1e-8) (list far-a a far-b) (list far-a a b far-b)) nil nil))
+    ((setq corner (srj:intersection a far-a b far-b))
+     (if (> radius 0.0)
+       (setq fillet (srj:fillet corner u v radius)))
+     (setq p (if fillet (car fillet) corner) q (if fillet (cadr fillet) corner))
+     (if (and (or (<= radius 0.0) fillet)
+              (< (srj:dot (mapcar '- p a) u) (- (nth 4 first) 1e-6))
+              (< (srj:dot (mapcar '- q b) v) (- (nth 4 second) 1e-6)))
+       (if fillet
+         (list (list far-a p) (list q far-b) fillet)
+         (list (list far-a corner far-b) nil nil)))))
+)
+
+(defun srj:layout-outline (plan / result item path arc)
+  (foreach item plan
+    (setq path (car item))
+    (if (caddr item)
+      (progn
+        (setq arc (srj:arc-points (caddr item)))
+        (if (> (distance (last path) (car arc)) (distance (last path) (last arc)))
+          (setq arc (reverse arc)))
+        (setq path (append path (cdr arc) (cdr (cadr item))))))
+    (setq result (append result path)))
+  result
+)
+
+(defun srj:road-layout (origin arms radius / ordered rest pair plan valid)
+  (setq ordered (vl-sort arms '(lambda (a b) (< (car a) (car b)))))
+  (if (= (length ordered) (length arms))
+    (progn
+      (setq rest (append ordered (list (car ordered))) valid T)
+      (while (and valid (cdr rest))
+        (setq pair (srj:arm-corner origin (car rest) (cadr rest) radius))
+        (if pair (setq plan (cons pair plan)) (setq valid nil))
+        (setq rest (cdr rest)))
+      (if (and valid (sr:outline-simple-p (srj:layout-outline (reverse plan))))
+        (reverse plan))))
+)
+
+(defun srj:layout-from-roads (/ origin count tolerance arms arm radius plan item fillet)
+  (if (setq origin (getpoint "\nPick the junction center on the alignments: "))
+    (progn
+      (setq origin (trans origin 1 0))
+      (initget "Three Four")
+      (setq count (if (equal "Four" (getkword "\nNumber of arms [Three/Four] <Three>: ")) 4 3)
+            tolerance (sr:number "Centerline tolerance (drawing units)" (* 0.05 (sr:unit-scale)) T))
+      (repeat count
+        (if (setq arm (srj:road-arm origin tolerance))
+          (setq arms (cons arm arms))
+          (exit)))
+      (setq radius (sr:number "Corner radius (drawing units)" (* 2.0 (sr:unit-scale)) T))
+      (if (setq plan (srj:road-layout origin arms radius))
+        (foreach item plan
+          (sr:plan-geometry 'sr:poly (list (car item) nil "SR-JUNCTION"))
+          (if (cadr item) (sr:plan-geometry 'sr:poly (list (cadr item) nil "SR-JUNCTION")))
+          (if (setq fillet (caddr item))
+            (sr:plan-geometry 'sr:arc (list (caddr fillet) radius (cadddr fillet) (nth 4 fillet) "SR-JUNCTION"))))
+        (princ "\nThe arms overlap, coincide or are too short for this radius. Check the picks and widths."))))
+)
 (defun c:SRJUNCTION (/ option)
   (if (sr:modelspace-p)
     (progn
-      (initget "Tee Cross Roundabout TurnLane")
-      (setq option (getkword "\nJunction [Tee/Cross/Roundabout/TurnLane] <Cross>: "))
+      (initget "FromRoads Tee Cross Roundabout TurnLane")
+      (setq option (getkword "\nJunction [FromRoads/Tee/Cross/Roundabout/TurnLane] <Cross>: "))
       (sr:feature (if option option "Cross"))))
   (princ)
 )
@@ -1950,7 +2252,7 @@
   (sr:unpack-profile value T)
 )
 
-(defun sr:profile-ui-template (action / key value profile)
+(defun sr:profile-ui-template (action / key value profile record)
   (setq key (sr:profile-template-key (vl-string-trim " " (get_tile "template"))))
   (cond
     ((null key)
@@ -1963,7 +2265,11 @@
        (progn
          (setq sr:ui-profile profile)
          (sr:profile-ui-refresh (if (car profile) 0 1) 0)
-         (set_tile "status" "Template loaded."))
+         (setq record (vl-catch-all-apply 'read (list value)))
+         (set_tile "status"
+           (if (and (listp record) (equal (car record) "SR-PROFILE-1"))
+             "Template loaded in current drawing units."
+             "Old template has no units. Check widths before saving or building.")))
        (set_tile "status" "No valid template with that name.")))
     ((not (sr:profile-valid-p sr:ui-profile))
      (set_tile "status" "Add at least one band before saving."))
@@ -2040,7 +2346,7 @@
 )
 
 (defun sr:quick-eligible-p (axis / data)
-  (setq data (entget axis '("SR-CORRIDOR" "SR-CORRIDOR-EDGE" "SR-ROAD-STYLE" "DROAD_APP")))
+  (setq data (entget axis '("SR-CORRIDOR" "SR-CORRIDOR-EDGE" "SR-ROAD-STYLE" "SR-TRANSIT-ANCHOR" "DROAD_APP")))
   (and (equal "Model" (cdr (assoc 410 data)))
        (member (cdr (assoc 0 data)) '("LINE" "ARC" "LWPOLYLINE"))
        (not (assoc -3 data))
@@ -2188,11 +2494,15 @@ Could not save the corridor data on alignment "
   (princ)
 )
 
-(defun sr:station-at-pick (axis point / projected station)
+(defun sr:station-at-wcs (axis point / projected station)
   (if (and point
-           (setq projected (vlax-curve-getClosestPointTo axis (trans point 1 0)))
+           (setq projected (vlax-curve-getClosestPointTo axis point))
            (setq station (vlax-curve-getDistAtPoint axis projected)))
     (max 0.0 (min (sr:length axis) station)))
+)
+
+(defun sr:station-at-pick (axis point)
+  (if point (sr:station-at-wcs axis (trans point 1 0)))
 )
 
 (defun sr:pick-range (axis / first-pick second-pick first last)
@@ -2260,8 +2570,21 @@ Could not save the corridor data on alignment "
   (princ)
 )
 
-(defun c:SRSECTION (/ axis model range regions overlapping prior profile taper updated)
-  (if (and (sr:modelspace-p) (setq axis (sr:pick-axis)))
+(defun sr:keep-section-sides (sections range / section result)
+  (foreach section sections
+    (cond
+      ((or (<= (cadr section) (car range)) (>= (car section) (cadr range)))
+       (setq result (cons section result)))
+      (T
+       (if (< (car section) (car range))
+         (setq result (cons (list (car section) (car range) (caddr section) (cadddr section)) result)))
+       (if (> (cadr section) (cadr range))
+         (setq result (cons (list (cadr range) (cadr section) (caddr section) (cadddr section)) result))))))
+  (reverse result)
+)
+
+(defun c:SRSECTION (/ axis model range regions overlapping prior profile taper updated choice retained)
+  (if (and (sr:modelspace-p) (setq axis (sr:pick-corridor)))
     (progn
       (setq model (sr:model axis))
       (cond
@@ -2278,17 +2601,23 @@ Could not save the corridor data on alignment "
             (princ "\nThe picked range overlaps several sections. Edit them one at a time."))
            ((and overlapping
                  (progn
-                   (initget "Yes No")
-                   (not (equal "Yes" (getkword "\nReplace the overlapping section? [Yes/No] <No>: ")))))
+                   (initget "Keep Replace Cancel")
+                   (setq choice (getkword "\nKeep outside stations or replace the whole override [Keep/Replace/Cancel] <Cancel>: "))
+                   (not (member choice '("Keep" "Replace")))))
             (princ "\nExisting section kept."))
            (T
-            (setq prior (car overlapping))
+            (setq prior (car overlapping)
+                  retained (cond ((equal choice "Keep") (sr:keep-section-sides regions range))
+                                 (prior (vl-remove prior regions))
+                                 (T regions)))
+            (if (equal choice "Keep")
+              (princ "\nOutside stations are kept; taper lengths are limited by each remaining section."))
             (if (setq profile (sr:section-profile (if prior (caddr prior) (car model))))
               (progn
                 (setq taper (sr:number "Transition length at each end" (if prior (cadddr prior) 0.0) T)
                       updated (vl-sort
                                 (cons (append range (list profile taper))
-                                      (if prior (vl-remove prior regions) regions))
+                                      retained)
                                 '(lambda (a b) (< (car a) (car b)))))
                 (sr:replace-section axis model (list (car model) updated))))))))))
   (princ)
@@ -2362,7 +2691,7 @@ Could not save the corridor data on alignment "
       (cond
         ((not (equal (cdr (assoc 410 data)) "Model"))
          (princ "\nSelect an edge in Model Space.") nil)
-        ((or (assoc "SR-CORRIDOR" application) (assoc "DROAD_APP" application) (assoc "SR-ROAD-STYLE" application))
+        ((or (assoc "SR-CORRIDOR" application) (assoc "DROAD_APP" application) (assoc "SR-ROAD-STYLE" application) (assoc "SR-TRANSIT-ANCHOR" application))
          (princ "\nThe selected object is a source alignment. Select a boundary edge.") nil)
         ((not (sr:writable-p entity))
          (princ "\nUnlock this road-edge layer before connecting.") nil)
@@ -2552,10 +2881,53 @@ Could not save the corridor data on alignment "
     (append data (list (list -3 entry))))
 )
 
-(defun srj:mark (data)
-  (if (assoc "SR-JUNCTION-EDIT" (cdr (assoc -3 data)))
-    data
-    (srj:put-marker data (list "SR-JUNCTION-EDIT" (cons 1070 1))))
+(defun srj:read-ranges (marker extent / values ranges)
+  (if (equal (cdr (assoc 1070 marker)) 2)
+    (progn
+      (setq values (sr:extent marker))
+      (while (cadr values)
+        (setq ranges (cons (list (car values) (cadr values)) ranges) values (cddr values)))
+      ranges)
+    ;; Older drawings only record that the full span was edited.
+    (list extent))
+)
+
+(defun srj:mark (data ranges / applications marker entry)
+  (setq applications (cdr (assoc -3 data))
+        marker (assoc "SR-JUNCTION-EDIT" applications)
+        entry (append '("SR-JUNCTION-EDIT" (1070 . 2))
+                 (if ranges
+                   (apply 'append
+                     (mapcar '(lambda (range)
+                       (list (cons 1040 (float (car range))) (cons 1040 (float (cadr range))))) ranges)))))
+  (if marker
+    (subst (cons -3 (subst entry marker applications)) (assoc -3 data) data)
+    (srj:put-marker data entry))
+)
+
+(defun srj:edge-trim-ranges (edge points / source extent data prior first last cut-start cut-end result)
+  (if (and (nth 4 edge) (= 2 (length (setq extent (sr:extent (nth 4 edge))))))
+    (progn
+      (setq data (cadr edge)
+            prior (assoc "SR-JUNCTION-EDIT" (cdr (assoc -3 data)))
+            source (handent (cdr (assoc 1005 (nth 4 edge))))
+            first (if (srj:arc-edge-p edge) (vlax-curve-getStartPoint (car edge)) (car (caddr edge)))
+            last (if (srj:arc-edge-p edge) (vlax-curve-getEndPoint (car edge)) (last (caddr edge))))
+      (if prior (setq result (srj:read-ranges prior extent)))
+      (if (and source (= 2 (length extent)))
+        (progn
+          (if (not (equal first (car points) 1e-6))
+            (if (setq cut-start (sr:station-at-wcs source (car points)))
+              (if (> (min cut-start (cadr extent)) (+ (car extent) 1e-6))
+                (setq result (cons (list (car extent) (min cut-start (cadr extent))) result)))
+              (setq result (list extent))))
+          (if (not (equal last (last points) 1e-6))
+            (if (setq cut-end (sr:station-at-wcs source (last points)))
+              (if (< (max cut-end (car extent)) (- (cadr extent) 1e-6))
+                (setq result (cons (list (max cut-end (car extent)) (cadr extent)) result)))
+              (setq result (list extent))))
+          (sr:merge-ranges result))
+        (list extent))))
 )
 
 (defun srj:restore-edge (edge / data)
@@ -2566,7 +2938,7 @@ Could not save the corridor data on alignment "
   (entupd (car edge))
 )
 
-(defun srj:modified-edge (edge points / data)
+(defun srj:modified-edge (edge points ranges / data)
   (setq data (cadr edge))
   (cond
     ((srj:arc-edge-p edge)
@@ -2576,7 +2948,7 @@ Could not save the corridor data on alignment "
     (setq data (subst (cons 11 (cadr points)) (assoc 11 data)
                  (subst (cons 10 (car points)) (assoc 10 data) data))))
     (T (setq data (srj:poly-data data points))))
-  (if (nth 4 edge) (srj:mark data) data)
+  (if (nth 4 edge) (srj:mark data ranges) data)
 )
 
 (defun srj:draw-preview (points)
@@ -2620,17 +2992,40 @@ Could not save the corridor data on alignment "
   (mapcar 'cdr (vl-remove-if-not '(lambda (item) (= (car item) 1040)) data))
 )
 
-(defun srj:affected-appearance (owner first second / spans tag)
+(defun srj:owner-extents (owner first second / tag ranges)
   (foreach tag (list (nth 4 first) (nth 4 second))
     (if (and tag (equal owner (cdr (assoc 1005 tag))))
-      (setq spans (cons (sr:extent tag) spans))))
-  (vl-remove-if '(lambda (entity / extent)
-    (setq extent (sr:extent (cdadr (assoc -3 (entget entity '("SR-ROAD-STYLE"))))))
-    (if (cdr extent) (setq extent (list (car extent) (cadr extent))))
-    (and extent (not (member extent spans)))) (sr:style-owned owner))
+      (setq ranges (cons (sr:extent tag) ranges))))
+  ranges
 )
 
-(defun srj:apply (first second plan / *error* doc undo first-changed second-changed arc fillet appearance erased entity owner-a owner-b sr:new legacy owner axis spans tag entry)
+(defun srj:affected-appearance (owner extents / entity data extent result)
+  (foreach entity (sr:style-owned owner)
+    (setq data (cdadr (assoc -3 (entget entity '("SR-ROAD-STYLE"))))
+          extent (sr:extent data))
+    (if (or (null extent) (member nil extents)
+            (vl-some '(lambda (range) (sr:ranges-overlap-p range extent)) extents))
+      (setq result (cons entity result))))
+  result
+)
+
+(defun srj:repaint-owner (owner extents appearance / axis model spans entity scheme legacy)
+  (if (and appearance (setq axis (handent owner)) (sr:model-valid-p (setq model (sr:model axis))))
+    (progn
+      (setq entity (car appearance) scheme (sr:style-scheme entity)
+            legacy (vl-some '(lambda (obj)
+              (not (sr:extent (cdadr (assoc -3 (entget obj '("SR-ROAD-STYLE"))))))) appearance)
+            spans (sr:paintable-spans axis model owner))
+      (if (and spans (not legacy) (not (member nil extents)))
+        (setq spans (vl-remove-if-not
+          '(lambda (span) (vl-some '(lambda (range) (sr:ranges-overlap-p range span)) extents))
+          spans)))
+      (if (and spans scheme)
+        (sr:style-render axis spans owner scheme (sr:style-dimensions entity)))))
+)
+
+(defun srj:apply (first second plan ranges-a ranges-b / *error* doc undo first-changed second-changed
+                  arc fillet appearance erased entity owner-a owner-b sr:new extents-a extents-b old-a old-b)
   (defun *error* (msg)
     (if arc (entdel arc))
     (foreach entity sr:new (if (entget entity) (entdel entity)))
@@ -2642,9 +3037,14 @@ Could not save the corridor data on alignment "
       (princ (strcat "\nSmart Road: " msg)))
     (princ))
   (setq owner-a (cdr (assoc 1005 (nth 4 first)))
-        owner-b (cdr (assoc 1005 (nth 4 second)))
-        appearance (append (if owner-a (srj:affected-appearance owner-a first second))
-                           (if (and owner-b (not (equal owner-a owner-b))) (srj:affected-appearance owner-b first second))))
+        owner-b (cdr (assoc 1005 (nth 4 second))))
+  (if owner-a
+    (setq extents-a (srj:owner-extents owner-a first second)
+          old-a (srj:affected-appearance owner-a extents-a)))
+  (if (and owner-b (not (equal owner-a owner-b)))
+    (setq extents-b (srj:owner-extents owner-b first second)
+          old-b (srj:affected-appearance owner-b extents-b)))
+  (setq appearance (append old-a old-b))
   (if (not (vl-every 'sr:writable-p appearance))
     (progn (princ "\nUnlock the road fill and marking layers first.") (exit)))
   (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
@@ -2653,9 +3053,9 @@ Could not save the corridor data on alignment "
   (if (or (nth 4 first) (nth 4 second))
     (if (and (not (tblsearch "APPID" "SR-JUNCTION-EDIT")) (not (regapp "SR-JUNCTION-EDIT")))
       (progn (princ "\nUnable to register the corridor junction marker.") (exit))))
-  (if (not (setq first-changed (entmod (srj:modified-edge first (car plan)))))
+  (if (not (setq first-changed (entmod (srj:modified-edge first (car plan) ranges-a))))
     (progn (princ "\nCould not modify the first edge.") (exit)))
-  (if (not (setq second-changed (entmod (srj:modified-edge second (cadr plan)))))
+  (if (not (setq second-changed (entmod (srj:modified-edge second (cadr plan) ranges-b))))
     (progn (princ "\nCould not modify the second edge.") (exit)))
   (if (setq fillet (caddr plan))
     (if (entmake (list '(0 . "ARC") '(100 . "AcDbEntity") (assoc 8 (cadr first))
@@ -2664,27 +3064,30 @@ Could not save the corridor data on alignment "
                        '(100 . "AcDbArc") (cons 50 (cadddr fillet)) (cons 51 (nth 4 fillet))))
       (setq arc (entlast))
       (progn (princ "\nCould not create the corner arc.") (exit))))
-  (foreach entity appearance
-    (setq tag (cdadr (assoc -3 (entget entity '("SR-ROAD-STYLE"))))
-          owner (cdr (assoc 1005 tag)))
-    (if (and (not (sr:extent tag)) (not (assoc owner legacy)))
-      (setq legacy (cons (cons owner entity) legacy))))
-  (foreach entry legacy
-    (setq owner (car entry) axis (handent owner))
-    (if (and axis (setq spans (sr:paintable-spans axis (sr:model axis) owner)))
-      (sr:style-render axis spans owner (sr:style-scheme (cdr entry)) (sr:style-dimensions (cdr entry)))))
+  (srj:repaint-owner owner-a extents-a old-a)
+  (srj:repaint-owner owner-b extents-b old-b)
   (foreach entity appearance
     (if (entdel entity) (setq erased (cons entity erased)) (exit)))
   (if undo (vla-EndUndoMark doc))
   (setq undo nil first-changed nil second-changed nil arc nil erased nil)
-  (if appearance (princ "\nCleared appearance on trimmed spans."))
+  (if appearance (princ "\nRefreshed appearance around the trimmed corner."))
   (entupd (car first))
   (entupd (car second))
   (princ "\nRoad edges connected.")
   (princ)
 )
 
-(defun c:SRCONNECT (/ *error* first second plan choice)
+(defun srj:preview-trim-ranges (edge ranges / axis range)
+  (if (and ranges (setq axis (handent (cdr (assoc 1005 (nth 4 edge))))))
+    (foreach range ranges
+      (princ (strcat "\nFinish excludes stations " (rtos (car range) 2 4)
+                     " to " (rtos (cadr range) 2 4) " on this alignment."))
+      (sr:preview-path
+        (mapcar '(lambda (station) (vlax-curve-getPointAtDist axis station))
+          (sr:stations axis (car range) (cadr range))) 6)))
+)
+
+(defun c:SRCONNECT (/ *error* first second plan choice ranges-a ranges-b)
   (defun *error* (msg)
     (redraw)
     (if (and msg (not (wcmatch (strcase msg) "*CANCEL*,*QUIT*,*BREAK*")))
@@ -2698,59 +3101,20 @@ Could not save the corridor data on alignment "
           (setq second (srj:pick-edge "\nPick the second road edge on the side you want to keep: "))
           (setq plan (srj:plan first second)))
      (srj:preview plan)
+     (setq ranges-a (srj:edge-trim-ranges first (car plan))
+           ranges-b (srj:edge-trim-ranges second (cadr plan)))
+     (srj:preview-trim-ranges first ranges-a)
+     (srj:preview-trim-ranges second ranges-b)
      (initget "Apply Cancel")
      (setq choice (getkword "\nGreen shows retained geometry, yellow marks the corner [Apply/Cancel] <Cancel>: "))
      (redraw)
-     (if (equal choice "Apply") (srj:apply first second plan))))
+     (if (equal choice "Apply") (srj:apply first second plan ranges-a ranges-b))))
   (princ)
 )
 
-;;; Measured Smart Road corridor quantities in drawing units.
+;;; Corridor boundary checks used when building and painting.
 
-(defun sr:quantity-axis-p (entity / data)
-  (and entity
-       (setq data (entget entity '("SR-CORRIDOR")))
-       (equal "Model" (cdr (assoc 410 data)))
-       (member (cdr (assoc 0 data)) '("LINE" "ARC" "LWPOLYLINE"))
-       (assoc -3 data))
-)
-
-(defun sr:quantity-select-axes (selection / index entity handle axis axes)
-  (setq index 0.0)
-  (if selection
-    (repeat (sslength selection)
-      (setq entity (ssname selection index) index (1+ index) axis nil)
-      (cond
-        ((sr:quantity-axis-p entity) (setq axis entity))
-        ((and (setq handle (cdr (assoc 1005 (sr:edge-data entity))))
-              (setq entity (handent handle))
-              (sr:quantity-axis-p entity))
-         (setq axis entity)))
-      (if (and axis (not (member axis axes)))
-        (setq axes (cons axis axes)))))
-  (reverse axes)
-)
-
-(defun sr:quantity-owner-edges (axes / groups axis entry selection index edge handle)
-  (foreach axis axes
-    (setq groups (cons (list (strcase (cdr (assoc 5 (entget axis))))) groups)))
-  (if (and groups (setq selection (ssget "_X" '((410 . "Model") (-3 ("SR-CORRIDOR-EDGE"))))))
-    (progn
-      (setq index 0.0)
-      (repeat (sslength selection)
-        (setq edge (ssname selection index) index (1+ index))
-        (if (and (setq handle (cdr (assoc 1005 (sr:edge-data edge))))
-                 (setq entry (assoc (strcase handle) groups)))
-          (setq groups (subst (cons (car entry) (cons edge (cdr entry))) entry groups))))))
-  groups
-)
-
-(defun sr:quantity-length (entity / value)
-  (setq value (vl-catch-all-apply 'sr:length (list entity)))
-  (if (and (numberp value) (> value 0.0)) value)
-)
-
-(defun sr:quantity-band (layer)
+(defun sr:edge-band (layer)
   (if layer
     (progn
       (setq layer (strcase layer))
@@ -2759,7 +3123,7 @@ Could not save the corridor data on alignment "
                sr:bands)))
 )
 
-(defun sr:quantity-vertices (entity / data elevation normal item points valid)
+(defun sr:edge-vertices (entity / data elevation normal item points valid)
   (setq data (entget entity '("SR-JUNCTION-EDIT"))
         elevation (cdr (assoc 38 data))
         normal (cdr (assoc 210 data)))
@@ -2779,17 +3143,17 @@ Could not save the corridor data on alignment "
       (if (and valid (cdr points)) (reverse points))))
 )
 
-(defun sr:quantity-cross (a b c)
+(defun sr:cross-product (a b c)
   (- (* (- (car b) (car a)) (- (cadr c) (cadr a)))
      (* (- (cadr b) (cadr a)) (- (car c) (car a))))
 )
 
-(defun sr:quantity-cell-area (a b c d sign / x y)
-  (setq x (* sign (sr:quantity-cross a b c))
-        y (* sign (sr:quantity-cross a c d)))
+(defun sr:strip-cell-area (a b c d sign / x y)
+  (setq x (* sign (sr:cross-product a b c))
+        y (* sign (sr:cross-product a c d)))
   (if (or (< x -1e-8) (< y -1e-8))
-    (setq x (* sign (sr:quantity-cross a b d))
-          y (* sign (sr:quantity-cross b c d))))
+    (setq x (* sign (sr:cross-product a b d))
+          y (* sign (sr:cross-product b c d))))
   (if (and (>= x -1e-8) (>= y -1e-8))
     (* 0.5 (max 0.0 (+ x y))))
 )
@@ -2813,26 +3177,26 @@ Could not save the corridor data on alignment "
                (<= (min (cadr a) (cadr b)) (max (cadr x) (cadr y)))
                (<= (min (cadr x) (cadr y)) (max (cadr a) (cadr b)))
                (or (inters a b x y T)
-                   (and (equal 0.0 (sr:quantity-cross a b x) 1e-10)
-                        (equal 0.0 (sr:quantity-cross a b y) 1e-10))))
+                   (and (equal 0.0 (sr:cross-product a b x) 1e-10)
+                        (equal 0.0 (sr:cross-product a b y) 1e-10))))
         (setq ok nil))
       (setq pending (cdr pending)))
     (setq edges (cdr edges)))
   ok
 )
 
-(defun sr:quantity-strip-area (inner outer sign / area cell valid)
+(defun sr:strip-area (inner outer sign / area cell valid)
   (setq area 0.0 valid (and (cdr inner) (= (length inner) (length outer))
                             (sr:outline-simple-p (append inner (reverse outer)))))
   (while (and valid (cdr inner))
-    (setq cell (sr:quantity-cell-area (car inner) (cadr inner) (cadr outer) (car outer) sign))
+    (setq cell (sr:strip-cell-area (car inner) (cadr inner) (cadr outer) (car outer) sign))
     (if (numberp cell)
       (setq area (+ area cell) inner (cdr inner) outer (cdr outer))
       (setq valid nil)))
   (if (and valid (> area 1e-12)) area)
 )
 
-(defun sr:quantity-offset-vertices (axis stations start finish start-offset finish-offset / ratio)
+(defun sr:offset-vertices (axis stations start finish start-offset finish-offset / ratio)
   (mapcar
     '(lambda (station)
        (setq ratio (/ (- station start) (- finish start)))
@@ -2840,7 +3204,7 @@ Could not save the corridor data on alignment "
     stations)
 )
 
-(defun sr:quantity-points-match-p (expected actual)
+(defun sr:points-match-p (expected actual)
   (and (= (length expected) (length actual))
        (vl-every '(lambda (a b) (equal a b 1e-6)) expected actual))
 )
@@ -2878,22 +3242,22 @@ Could not save the corridor data on alignment "
   (reverse corners)
 )
 
-(defun sr:quantity-measured-edge (kind expected candidates)
+(defun sr:matching-edge (kind expected candidates)
   (vl-some
     '(lambda (entry)
        (if (and (equal kind (cadr entry)) (not (equal "ARC" (cdr (assoc 0 (entget (car entry)))))))
          (cond
-           ((sr:quantity-points-match-p expected (caddr entry)) entry)
-           ((sr:quantity-points-match-p expected (reverse (caddr entry)))
+           ((sr:points-match-p expected (caddr entry)) entry)
+           ((sr:points-match-p expected (reverse (caddr entry)))
             (list (car entry) (cadr entry) (reverse (caddr entry))))
-           ((sr:quantity-points-match-p (sr:linear-corners expected)
+           ((sr:points-match-p (sr:linear-corners expected)
                                         (sr:linear-corners (caddr entry))) entry)
-           ((sr:quantity-points-match-p (sr:linear-corners expected)
+           ((sr:points-match-p (sr:linear-corners expected)
                                         (reverse (sr:linear-corners (caddr entry)))) entry))))
     candidates)
 )
 
-(defun sr:quantity-arc-match (axis start finish pair expected candidates / center radius length)
+(defun sr:matching-arc (axis start finish pair expected candidates / center radius length)
   (setq center (cdr (assoc 10 (entget axis))) radius (cdr (assoc 40 (entget axis))))
   (if (and radius (equal (car pair) (cadr pair) 1e-10))
     (progn
@@ -2918,405 +3282,61 @@ Could not save the corridor data on alignment "
     stations)
 )
 
-(defun sr:quantity-span-areas (axis span edges
+(defun sr:span-boundaries-valid-p (axis span edges
                                / start finish from to stations axis-points edge data points candidates
-                                 side sign inner pair expected match area areas valid sr:envelope legacy prior sr-radius inner-offset)
+                                 side sign inner pair expected match valid sr:envelope legacy prior sr-radius allowed marked)
   (setq start (car span) finish (cadr span)
         from (caddr span) to (if (cadddr span) (cadddr span) from)
         sr:envelope (max (sr:profile-envelope from) (sr:profile-envelope to))
         sr-radius (if (equal "ARC" (cdr (assoc 0 (entget axis)))) (cdr (assoc 40 (entget axis))))
         stations (sr:stations axis start finish)
-        axis-points (sr:quantity-offset-vertices axis stations start finish 0.0 0.0)
+        axis-points (sr:offset-vertices axis stations start finish 0.0 0.0)
         valid T)
   (foreach edge edges
-    (if (and (setq points (if (and (equal "ARC" (cdr (assoc 0 (entget edge))))
-                                         (not (assoc -3 (entget edge '("SR-JUNCTION-EDIT")))))
-                                  (list (vlax-curve-getStartPoint edge) (vlax-curve-getEndPoint edge))
-                                  (sr:quantity-vertices edge)))
-             (setq data (sr:quantity-band (cdr (assoc 8 (entget edge))))))
-      (setq candidates (cons (list edge data points) candidates))
-      (setq valid nil)))
+    (setq data (sr:edge-band (cdr (assoc 8 (entget edge))))
+          marked (assoc -3 (entget edge '("SR-JUNCTION-EDIT"))))
+    (cond
+      ((and sr:trim-allowed data marked)
+       (setq allowed (cons (list edge data) allowed)))
+      ((and data (not marked)
+            (setq points (if (equal "ARC" (cdr (assoc 0 (entget edge))))
+                           (list (vlax-curve-getStartPoint edge) (vlax-curve-getEndPoint edge))
+                           (sr:edge-vertices edge))))
+       (setq candidates (cons (list edge data points) candidates)))
+      (T (setq valid nil))))
   (foreach side '(0 1)
-    (setq sign (if (= side 0) 1.0 -1.0) inner axis-points inner-offset 0.0)
+    (setq sign (if (= side 0) 1.0 -1.0) inner axis-points)
     (foreach pair (sr:pair-bands (nth side from) (nth side to) sign)
       (if valid
         (progn
-          (setq expected (sr:quantity-offset-vertices axis stations start finish (car pair) (cadr pair))
-                match (sr:quantity-measured-edge (caddr pair) expected candidates))
+          (setq expected (sr:offset-vertices axis stations start finish (car pair) (cadr pair))
+                match (sr:matching-edge (caddr pair) expected candidates))
           (if (and sr-radius (not match))
-            (setq match (sr:quantity-arc-match axis start finish pair expected candidates)))
+            (setq match (sr:matching-arc axis start finish pair expected candidates)))
           (if (not match)
             (progn
               (if (not prior)
                 (progn (setq sr:envelope nil prior (sr:stations axis start finish))
                        (setq sr:envelope (max (sr:profile-envelope from) (sr:profile-envelope to)))))
-              (setq match (sr:quantity-measured-edge (caddr pair)
+              (setq match (sr:matching-edge (caddr pair)
                             (sr:old-offset-points axis prior start finish pair nil) candidates))))
           (if (not match)
             (progn
               (if (not legacy) (setq legacy (sr:legacy-stations axis start finish)))
-              (setq match (sr:quantity-measured-edge (caddr pair)
+              (setq match (sr:matching-edge (caddr pair)
                             (sr:old-offset-points axis legacy start finish pair T) candidates))))
-          (if (and match (setq area (sr:quantity-strip-area inner expected sign)))
-            (setq areas (cons (cons (caddr pair)
-                          (if (and sr-radius (not (cadddr span))
-                                   (equal "ARC" (cdr (assoc 0 (entget (car match))))))
-                            (* (- finish start) (abs (- (car pair) inner-offset))
-                               (- 1.0 (/ (+ (car pair) inner-offset) (* 2.0 sr-radius))))
-                            area)) areas)
-                  inner expected inner-offset (car pair)
+          (if (not match)
+            (if (setq match (vl-some '(lambda (record)
+                                      (if (equal (cadr record) (caddr pair)) record)) allowed))
+              (setq allowed (vl-remove match allowed))))
+          (if (and match (sr:strip-area inner expected sign))
+            (setq inner expected
                   candidates (vl-remove-if '(lambda (record) (eq (car record) (car match))) candidates))
             (setq valid nil))))))
-  (if (and valid (not candidates)) areas)
+  (and valid (null candidates) (null allowed))
 )
 
-(defun sr:quantity-axis-areas (axis model edges / spans inventory span pieces areas valid)
-  (setq spans (sr:spans axis model)
-        inventory (sr:span-inventory axis spans edges)
-        valid (and spans inventory))
-  (foreach span spans
-    (if valid
-      (if (setq pieces (sr:quantity-span-areas axis span (cdr (assoc span inventory))))
-        (setq areas (append pieces areas))
-        (setq valid nil))))
-  (if valid areas)
-)
-
-(defun sr:quantity-add (rows kind count length area / record)
-  (if (setq record (assoc kind rows))
-    (subst (list kind (+ count (cadr record)) (+ length (caddr record)) (+ area (cadddr record)))
-           record rows)
-    (cons (list kind count length area) rows))
-)
-
-(defun sr:quantity-profile-kinds (model / profile side band kinds)
-  (foreach profile (cons (car model) (mapcar 'caddr (cadr model)))
-    (foreach side profile
-      (foreach band side
-        (if (not (member (car band) kinds))
-          (setq kinds (cons (car band) kinds))))))
-  kinds
-)
-
-(defun sr:quantity-report (axes / axis seen groups handle edges edge kind measured
-                                model model-valid areas area rows ordered spec count incomplete
-                                valid edge-kinds unknown-kinds unknown-all)
-  (setq count 0 incomplete 0)
-  (foreach axis axes
-    (if (and (sr:quantity-axis-p axis) (not (member axis seen)))
-      (setq seen (cons axis seen))))
-  (setq groups (sr:quantity-owner-edges seen))
-  (foreach axis seen
-    (setq count (1+ count)
-          handle (strcase (cdr (assoc 5 (entget axis))))
-          edges (cdr (assoc handle groups))
-          measured (sr:quantity-length axis)
-          valid (numberp measured)
-          edge-kinds nil)
-    (if valid (setq rows (sr:quantity-add rows "Alignment" 1 measured 0.0)))
-    (foreach edge edges
-      (setq kind (sr:quantity-band (cdr (assoc 8 (entget edge))))
-            measured (sr:quantity-length edge))
-      (if (and kind (not (member kind edge-kinds)))
-        (setq edge-kinds (cons kind edge-kinds)))
-      (if (and kind measured)
-        (setq rows (sr:quantity-add rows kind 1 measured 0.0))
-        (setq valid nil)))
-    (setq model (vl-catch-all-apply 'sr:model (list axis))
-          model-valid (eq T (vl-catch-all-apply 'sr:model-valid-p (list model)))
-          areas nil)
-    (if (and valid model-valid)
-      (setq areas (vl-catch-all-apply 'sr:quantity-axis-areas (list axis model edges))))
-    (if (and (listp areas) areas)
-      (foreach area areas
-        (setq rows (sr:quantity-add rows (car area) 0 0.0 (cdr area))))
-      (progn
-        (setq incomplete (1+ incomplete))
-        (if model-valid
-          (foreach kind (append (sr:quantity-profile-kinds model) edge-kinds)
-            (if (not (member kind unknown-kinds))
-              (setq unknown-kinds (cons kind unknown-kinds))))
-          (setq unknown-all T)))))
-  (foreach spec (cons '("Alignment") sr:bands)
-    (if (setq area (assoc (car spec) rows))
-      (setq ordered (cons
-        (list (car area) (cadr area) (caddr area)
-              (if (and (not unknown-all)
-                       (not (member (car area) (cons "Alignment" unknown-kinds))))
-                (cadddr area)))
-        ordered))))
-  (list count incomplete (reverse ordered))
-)
-
-;; Measure selected Model Space curves by layer, independent of corridor ownership.
-(defun sr:quantity-existing-item (entity / data kind normal end length closed area)
-  (setq data (entget entity)
-        kind (cdr (assoc 0 data))
-        normal (cdr (assoc 210 data)))
-  (if (and (equal (cdr (assoc 410 data)) "Model")
-           (member kind '("LINE" "ARC" "LWPOLYLINE" "CIRCLE" "ELLIPSE"))
-           (if (equal kind "LINE")
-             (equal (caddr (cdr (assoc 10 data))) (caddr (cdr (assoc 11 data))) 1e-8)
-             (or (not normal) (equal normal '(0.0 0.0 1.0) 1e-8)
-                 (equal normal '(0.0 0.0 -1.0) 1e-8)))
-           (setq end (vlax-curve-getEndParam entity))
-           (setq length (vlax-curve-getDistAtParam entity end))
-           (> length 1e-6))
-    (progn
-      (setq closed (vlax-curve-isClosed entity))
-      (if closed
-        (progn
-          (setq area (vl-catch-all-apply 'vla-get-Area (list (vlax-ename->vla-object entity))))
-          (if (or (not (numberp area)) (<= area 0.0)) (setq area nil))))
-      (list (strcat (cdr (assoc 8 data)) (if closed " / Closed" " / Open"))
-            length area closed)))
-)
-
-(defun sr:quantity-existing-report (selection / index entity measure rows row key area count incomplete)
-  (setq index 0.0 count 0 incomplete 0)
-  (repeat (sslength selection)
-    (setq entity (ssname selection index) index (1+ index)
-          measure (vl-catch-all-apply 'sr:quantity-existing-item (list entity)))
-    (if (and measure (not (vl-catch-all-error-p measure)))
-      (progn
-        (setq key (car measure) area (caddr measure) row (assoc key rows)
-              count (1+ count))
-        (if (and (cadddr measure) (not area)) (setq incomplete (1+ incomplete)))
-        (if row
-          (setq rows
-            (subst
-              (list key (1+ (cadr row)) (+ (caddr row) (cadr measure))
-                    (if (and (cadddr row) area) (+ (cadddr row) area)))
-              row rows))
-          (setq rows (cons (list key 1 (cadr measure) area) rows))))
-      (setq incomplete (1+ incomplete))))
-  (list count incomplete (vl-sort rows '(lambda (a b) (< (strcase (car a)) (strcase (car b))))))
-)
-
-(defun sr:quantity-unit ()
-  (cdr (assoc (getvar "INSUNITS")
-    '((0 . "du") (1 . "in") (2 . "ft") (3 . "mi") (4 . "mm") (5 . "cm")
-      (6 . "m") (7 . "km") (8 . "microin") (9 . "mil") (10 . "yd")
-      (11 . "angstrom") (12 . "nm") (13 . "um") (14 . "dm") (15 . "dam")
-      (16 . "hm") (17 . "Gm") (18 . "AU") (19 . "ly") (20 . "pc")
-      (21 . "us-ft") (22 . "us-in") (23 . "us-yd") (24 . "us-mi"))))
-)
-
-(defun sr:quantity-scale-report (report factor / rows row area)
-  (foreach row (caddr report)
-    (setq area (cadddr row)
-          rows (cons (list (car row) (cadr row) (* factor (caddr row))
-                           (if (numberp area) (* factor factor area)))
-                     rows)))
-  (list (car report) (cadr report) (reverse rows))
-)
-
-(defun sr:quantity-columns (scope unit)
-  (list (if (equal scope "Existing") "Layer / item" "Item")
-        "Entities"
-        (strcat (if (equal scope "Existing") "Length / perimeter (" "Length (") unit ")")
-        (strcat "Gross plan area (" unit "^2)"))
-)
-
-(defun sr:quantity-text (value)
-  (cond
-    ((null value) "")
-    ((eq 'INT (type value)) (itoa value))
-    ((numberp value) (rtos value 2 8))
-    (T value))
-)
-
-(defun sr:quantity-note (scope report)
-  (strcat (itoa (car report))
-          (if (equal scope "Existing") " selected curve(s)" " corridor(s)")
-          ", " (itoa (cadr report)) " incomplete. Blank area means unavailable or not applicable.")
-)
-
-(defun sr:quantity-print (scope unit report / row)
-  (princ (strcat "\nSmart Road Quantities - " scope "\n"
-                 (sr:quantity-note scope report)))
-  (princ (strcat "\nLength: " unit " | Gross plan area: " unit "^2"))
-  (if (equal unit "du") (princ " (du = drawing units)"))
-  (princ (if (equal scope "Existing")
-           "\nClosed curve length is its perimeter. Gross area sums closed curves."
-           "\nEdge lengths follow the measured curves. Gross area sums complete bands."))
-  (foreach row (caddr report)
-    (princ (strcat "\n  " (car row) "  |  " (itoa (cadr row))
-                   "  |  " (sr:quantity-text (caddr row))
-                   "  |  " (if (cadddr row) (sr:quantity-text (cadddr row)) "-"))))
-)
-
-(defun sr:quantity-csv-field (value / trimmed first quote-index)
-  (cond
-    ((null value) "")
-    ((numberp value) (vl-string-subst "." "," (sr:quantity-text value)))
-    (T
-     (setq trimmed (vl-string-left-trim " \t\r\n" value)
-           first (substr trimmed 1 1))
-     (if (or (member first '("=" "+" "-" "@"))
-             (and (> (strlen value) 0) (< (ascii value) 32))
-             (and (> (strlen trimmed) 0) (< (ascii trimmed) 32)))
-       (setq value (strcat "'" value)))
-     (setq quote-index (vl-string-search "\"" value))
-     (while quote-index
-       (setq value (vl-string-subst "\"\"" "\"" value quote-index)
-             quote-index (vl-string-search "\"" value (+ quote-index 2))))
-     (strcat "\"" value "\"")))
-)
-
-(defun sr:quantity-csv-line (values / text value)
-  (setq text (sr:quantity-csv-field (car values)))
-  (foreach value (cdr values)
-    (setq text (strcat text "," (sr:quantity-csv-field value))))
-  text
-)
-
-(defun sr:quantity-write-csv (temp scope unit report / row)
-  (if (setq sr:qty-stream (open temp "w"))
-    (progn
-      (write-line (sr:quantity-csv-line
-                    (append (list "Scope") (sr:quantity-columns scope unit)
-                            (list "Incomplete sources"))) sr:qty-stream)
-      (foreach row (caddr report)
-        (write-line (sr:quantity-csv-line
-                      (append (list scope) row (list (cadr report)))) sr:qty-stream))
-      (close sr:qty-stream)
-      (setq sr:qty-stream nil)
-      T))
-)
-
-(defun sr:quantity-export (path scope unit report / temp sr:qty-stream result)
-  (setq temp (vl-filename-mktemp "sr-quantities-" (vl-filename-directory path) ".tmp"))
-  (if temp
-    (progn
-      (setq result (vl-catch-all-apply 'sr:quantity-write-csv (list temp scope unit report)))
-      (if sr:qty-stream (vl-catch-all-apply 'close (list sr:qty-stream)))
-      (if (eq result T)
-        (setq result (vl-catch-all-apply 'vl-file-rename (list temp path)))
-        (setq result nil))
-      (if (findfile temp) (vl-catch-all-apply 'vl-file-delete (list temp)))
-      (eq result T)))
-)
-
-(defun sr:quantity-path (/ path searching)
-  (setq searching T)
-  (while searching
-    (setq path (getfiled "Export quantities to a new CSV file" "Smart Road Quantities.csv" "csv" 129))
-    (if (and path (findfile path))
-      (princ "\nThis file already exists. Choose a new filename for the export.")
-      (setq searching nil)))
-  path
-)
-
-(defun sr:quantity-table-row (table index values / column value)
-  (setq column 0)
-  (foreach value values
-    (vla-SetText table index column (sr:quantity-text value))
-    (setq column (1+ column)))
-)
-
-(defun sr:quantity-table (doc point scope unit report / row index height note-row suppress)
-  (setq height (max 1e-6 (getvar "TEXTSIZE"))
-        note-row (+ 2 (length (caddr report)))
-        sr:qty-table (vla-AddTable (vla-get-ModelSpace doc) (vlax-3d-point (trans point 1 0))
-                                  (1+ note-row) 4 (* height 2.2) (* height 20.0))
-        suppress (vlax-property-available-p sr:qty-table "RegenerateTableSuppressed" T))
-  (if suppress (vla-put-RegenerateTableSuppressed sr:qty-table :vlax-true))
-  (vla-put-TitleSuppressed sr:qty-table :vlax-false)
-  (vla-put-HeaderSuppressed sr:qty-table :vlax-false)
-  (vla-SetText sr:qty-table 0 0 (strcat "Smart Road Quantities - " scope))
-  (sr:quantity-table-row sr:qty-table 1 (sr:quantity-columns scope unit))
-  (setq index 2)
-  (foreach row (caddr report)
-    (sr:quantity-table-row sr:qty-table index row)
-    (setq index (1+ index)))
-  (vla-MergeCells sr:qty-table note-row note-row 0 3)
-  (vla-SetText sr:qty-table note-row 0 (sr:quantity-note scope report))
-  (if suppress (vla-put-RegenerateTableSuppressed sr:qty-table :vlax-false))
-  (vla-Update sr:qty-table)
-)
-
-(defun sr:quantity-output (point path scope unit report / *error* doc undo sr:qty-table)
-  (defun *error* (msg)
-    (if (and sr:qty-table
-             (vl-catch-all-error-p (vl-catch-all-apply 'vla-Delete (list sr:qty-table))))
-      (princ "\nCould not remove the unfinished table. Use U to undo its insertion."))
-    (if undo (vl-catch-all-apply 'vla-EndUndoMark (list doc)))
-    (if (and msg (not (wcmatch (strcase msg) "*CANCEL*,*QUIT*,*BREAK*")))
-      (princ (strcat "\nSmart Road quantities: " msg)))
-    (princ))
-  (if point
-    (progn
-      (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
-      (if (= 0 (logand 8 (getvar "UNDOCTL")))
-        (progn
-          (vla-StartUndoMark doc)
-          (setq undo T)))
-      (sr:quantity-table doc point scope unit report)))
-  (if (or (null path) (sr:quantity-export path scope unit report))
-    (progn
-      (if undo (vla-EndUndoMark doc))
-      (if point (princ "\nQuantity table inserted."))
-      (if path (princ (strcat "\nCSV saved: " path))))
-    (*error* "CSV export failed. Check the destination and try again."))
-  (princ)
-)
-
-(defun sr:quantity-table-ready-p ()
-  (if (sr:modelspace-p)
-    (if (= 0 (logand 2 (getvar "UNDOCTL")))
-      T
-      (progn
-        (princ "\nSet UNDO Control to All to insert a quantity table. CSV can be exported separately.")
-        nil)))
-)
-
-(defun c:SRQUANTITY (/ selection scope report unit factor choice point path)
-  (cond
-    ((= 1 (getvar "CVPORT")) (princ "\nSwitch to Model Space or enter a model viewport."))
-    (T
-     (setq selection (ssget "_I"))
-     (initget "Corridors Existing")
-     (setq scope (getkword "\nQuantities for [Corridors/Existing] <Corridors>: "))
-     (if (null scope) (setq scope "Corridors"))
-     (if (null selection)
-       (progn
-         (princ (if (equal scope "Existing")
-                  "\nSelect existing curves for quantities."
-                  "\nSelect alignments or generated edges. Each linked edge selects its entire corridor."))
-         (setq selection (ssget '((0 . "LINE,ARC,LWPOLYLINE,CIRCLE,ELLIPSE") (410 . "Model"))))))
-     (if selection
-       (progn
-         (setq report (if (equal scope "Existing")
-                        (sr:quantity-existing-report selection)
-                        (sr:quantity-report (sr:quantity-select-axes selection))))
-         (if (caddr report)
-           (progn
-             (setq unit (sr:quantity-unit))
-             (if (null unit) (setq unit "du"))
-             (setq factor (cdr (assoc unit '(("mm" . 0.001) ("cm" . 0.01)))))
-             (if factor
-               (progn
-                 (initget "Drawing Meters")
-                 (if (equal (getkword (strcat "\nReport units [Drawing/Meters] <Drawing> (drawing = " unit "): ")) "Meters")
-                   (setq report (sr:quantity-scale-report report factor)
-                         unit "m"))))
-             (sr:quantity-print scope unit report)
-             (initget "Table CSV Both Exit")
-             (setq choice (getkword "\nOutput [Table/CSV/Both/Exit] <Exit>: "))
-             (cond
-               ((equal choice "CSV")
-                (if (setq path (sr:quantity-path))
-                  (sr:quantity-output nil path scope unit report)))
-               ((and (member choice '("Table" "Both")) (sr:quantity-table-ready-p)
-                     (setq point (getpoint "\nPlace quantity table: ")))
-                (if (or (equal choice "Table") (setq path (sr:quantity-path)))
-                  (sr:quantity-output point path scope unit report)))))
-           (princ "\nNo measurable curves in that selection."))))))
-  (princ)
-)
-
-;; Presentation objects use their own XData so quantity scans still see only corridor edges.
+;; Presentation objects use separate ownership tags from corridor edges.
 (defun sr:require-style-layer (name / existing)
   (if (and (setq existing (tblsearch "LAYER" name))
            (or (< (cdr (assoc 62 existing)) 0) (/= 0 (logand 5 (cdr (assoc 70 existing))))))
@@ -3372,17 +3392,42 @@ Could not save the corridor data on alignment "
         (progn (princ "\nAutoCAD could not create a solid hatch.") (exit)))))
 )
 
+(defun sr:preview-path (points color / previous point vectors)
+  (setq previous (trans (car points) 0 1))
+  (foreach point (cdr points)
+    (setq point (trans point 0 1)
+          vectors (cons point (cons previous vectors))
+          previous point))
+  (if vectors (grvecs (cons color (reverse vectors))))
+)
+
+(defun sr:draft-offset-path (frames offset)
+  (mapcar '(lambda (frame) (mapcar '+ (car frame) (srj:scaled (cadr frame) offset))) frames)
+)
+
+;; A sketch has one constant section. Built corridors may also have station-dependent offsets.
+(defun sr:style-vertices (axis stations start finish first last)
+  (if axis
+    (sr:offset-vertices axis stations start finish first last)
+    (sr:draft-offset-path sr:preview-frames first))
+)
+
 (defun sr:style-line (points width layer / point vertices)
-  (foreach point points
-    (setq vertices (cons (cons 10 (list (car point) (cadr point))) vertices)))
-  (if (entmake (append
-                 (list '(0 . "LWPOLYLINE") '(100 . "AcDbEntity") (cons 8 layer)
-                       '(100 . "AcDbPolyline") (cons 90 (length points)) '(70 . 0)
-                       (cons 43 width) (cons 38 (caddr (car points))))
-                 (reverse vertices)))
-    (progn (setq point (sr:style-track))
-           (if sr:appearance-lines (ssadd point sr:appearance-lines)) point)
-    (exit))
+  (if sr:appearance-preview
+    (sr:preview-path points layer)
+    (progn
+      (foreach point points
+        (setq vertices (cons (cons 10 (list (car point) (cadr point))) vertices)))
+      (if (entmake (append
+                     (list '(0 . "LWPOLYLINE") '(100 . "AcDbEntity") (cons 8 layer)
+                           '(100 . "AcDbPolyline") (cons 90 (length points)) '(70 . 0)
+                           (cons 43 width) (cons 38 (caddr (car points))))
+                     (reverse vertices)))
+        (progn
+          (setq point (sr:style-track))
+          (if sr:appearance-lines (ssadd point sr:appearance-lines))
+          point)
+        (exit))))
 )
 
 (defun sr:style-material (kind)
@@ -3410,20 +3455,40 @@ Could not save the corridor data on alignment "
 
 ;; Split the actual painted path. Keep the finishing phase for a matching
 ;; boundary at the next span, including across a widening or taper.
+(defun sr:style-dash-prelude (axis start finish first last yellow / origin offset previous data points total)
+  (setq origin sr:appearance-original-start total 0.0)
+  (if (and axis origin (> start origin))
+    (progn
+      (setq offset (+ first (* (- last first) (/ (- origin start) (float (- finish start)))))
+            previous (assoc (list origin offset yellow) sr:dash-phases)
+            total (if previous (cdr previous) 0.0)
+            data (entget axis))
+      (if (and (equal "ARC" (cdr (assoc 0 data))) (equal first last 1e-10))
+        (setq data (cdr (assoc 40 data))
+              total (+ total (* (- start origin) (/ (- data first) data))))
+        (progn
+          (setq points (sr:offset-vertices axis (sr:stations axis origin start) origin start offset first))
+          (while (cdr points)
+            (setq total (+ total (distance (car points) (cadr points))) points (cdr points)))))))
+  total
+)
+
 (defun sr:style-stripe (axis stations start finish first last dashed yellow
-                        / scale layer width points lengths total pieces ranges a b len
+                        / scale layer width points lengths total pieces ranges dash gap a b len
                           base lo hi path previous key radius factor interval remaining)
   (setq scale (sr:unit-scale)
-        layer (if yellow (sr:style-layer "SR-MARK-YELLOW" '(244 192 54))
-                         (sr:style-layer "SR-MARK-WHITE" '(248 247 240)))
+        layer (cond (sr:appearance-preview (if yellow 2 7))
+                    (yellow (sr:style-layer "SR-MARK-YELLOW" '(244 192 54)))
+                    (T (sr:style-layer "SR-MARK-WHITE" '(248 247 240))))
         width (* (car sr:appearance-dimensions) scale)
-        points (sr:quantity-offset-vertices axis stations start finish first last))
+        points (sr:style-vertices axis stations start finish first last))
   (if (not dashed)
     (sr:style-line points width layer)
     (progn
       (setq key (list start first yellow) previous (assoc key sr:dash-phases)
-            base (if previous (cdr previous) 0.0) total base)
-      (if (and (equal first last 1e-10) (equal "ARC" (cdr (assoc 0 (entget axis)))))
+            base (if previous (cdr previous) (sr:style-dash-prelude axis start finish first last yellow))
+            total base)
+      (if (and axis (equal first last 1e-10) (equal "ARC" (cdr (assoc 0 (entget axis)))))
         (setq radius (cdr (assoc 40 (entget axis))) factor (/ (- radius first) radius)))
       (setq lengths stations)
       (while (cdr points)
@@ -3434,9 +3499,11 @@ Could not save the corridor data on alignment "
         (setq points (cdr points) lengths (cdr lengths)))
       (setq sr:dash-phases (cons (cons (list finish last yellow) total) sr:dash-phases)
             pieces (reverse pieces)
-            ranges (sr:style-dash-ranges base total
-                     (* (cadr sr:appearance-dimensions) scale)
-                     (* (caddr sr:appearance-dimensions) scale)))
+            dash (* (cadr sr:appearance-dimensions) scale)
+            gap (* (caddr sr:appearance-dimensions) scale)
+            ;; Keep cursor tracking responsive on long alignments.
+            ranges (if (or (not sr:appearance-preview) (<= (- total base) (* 500 (+ dash gap))))
+                     (sr:style-dash-ranges base total dash gap)))
       (foreach interval ranges
         (while (and pieces (<= (cadar pieces) (car interval))) (setq pieces (cdr pieces)))
         (setq path nil)
@@ -3455,45 +3522,98 @@ Could not save the corridor data on alignment "
   (member kind '("Lane" "Bus" "BRT"))
 )
 
+(defun sr:road-group-end (pairs / boundary)
+  (while (and pairs (sr:style-road-band-p (caddar pairs)))
+    (setq boundary (car pairs) pairs (cdr pairs)))
+  boundary
+)
+
+;; Both sides of a taper are linear in station. Testing both ends bounds the stripe throughout.
+(defun sr:stripe-fits-p (offset inner outer half)
+  (and (>= (- offset half) (- (min inner outer) 1e-8))
+       (<= (+ offset half) (+ (max inner outer) 1e-8)))
+)
+
+(defun sr:bounded-stripe (axis stations start finish first last dashed yellow bounds-from bounds-to half)
+  (if (and (sr:stripe-fits-p first (car bounds-from) (cadr bounds-from) half)
+           (sr:stripe-fits-p last (car bounds-to) (cadr bounds-to) half))
+    (sr:style-stripe axis stations start finish first last dashed yellow)
+    (setq sr:style-skipped T))
+)
+
+(defun sr:style-center (axis stations span from to half / start finish left right bounds-from bounds-to shift)
+  (if (and (not (equal sr:appearance-scheme "NoCenter"))
+           (vl-every '(lambda (side) (sr:style-road-band-p (caar side))) from)
+           (vl-every '(lambda (side) (sr:style-road-band-p (caar side))) to))
+    (progn
+      (setq start (car span) finish (cadr span)
+            left (sr:road-group-end (sr:pair-bands (car from) (car to) 1.0))
+            right (sr:road-group-end (sr:pair-bands (cadr from) (cadr to) -1.0))
+            bounds-from (list (car right) (car left))
+            bounds-to (list (cadr right) (cadr left)))
+      (if (equal sr:appearance-scheme "DoubleYellow")
+        (progn
+          (setq shift (+ half (* 0.5 (cadddr sr:appearance-dimensions) (sr:unit-scale))))
+          (if (and (sr:stripe-fits-p shift 0.0 (cadr bounds-from) half)
+                   (sr:stripe-fits-p shift 0.0 (cadr bounds-to) half)
+                   (sr:stripe-fits-p (- shift) (car bounds-from) 0.0 half)
+                   (sr:stripe-fits-p (- shift) (car bounds-to) 0.0 half))
+            (progn
+              (sr:style-stripe axis stations start finish shift shift nil T)
+              (sr:style-stripe axis stations start finish (- shift) (- shift) nil T))
+            (setq sr:style-skipped T)))
+        (sr:bounded-stripe axis stations start finish 0.0 0.0 T
+                          (not (equal sr:appearance-scheme "WhiteDash")) bounds-from bounds-to half))))
+)
+
 (defun sr:style-spans (axis spans / span start finish from to stations index sign points pairs edge material
-                                  current next inner outer center-offset sr:dash-phases sr:envelope previous
-                                  inner-first inner-last opposite sr:appearance-span)
+                                  current next inner outer sr:dash-phases sr:envelope previous
+                                  inner-first inner-last opposite sr:appearance-span sr:appearance-original-start sr:style-skipped
+                                  half inset group-end bounds-from bounds-to shift)
+  (setq half (* 0.5 (car sr:appearance-dimensions) (sr:unit-scale)))
   (foreach span spans
     (setq start (car span) finish (cadr span) from (caddr span)
           to (if (cadddr span) (cadddr span) from)
           sr:appearance-span (list start finish)
+          sr:appearance-original-start (nth 4 span)
+          sr:style-skipped nil
           sr:envelope (max (sr:profile-envelope from) (sr:profile-envelope to))
-          stations (sr:stations axis start finish)
-          points (sr:quantity-offset-vertices axis stations start finish 0.0 0.0))
+          stations (if axis (sr:stations axis start finish))
+          points (sr:style-vertices axis stations start finish 0.0 0.0))
     (foreach index '(0 1)
       (setq sign (if (= index 0) 1.0 -1.0) inner points previous nil inner-first 0.0 inner-last 0.0
             opposite (sr:pair-bands (nth (- 1 index) from) (nth (- 1 index) to) (- sign))
             pairs (sr:pair-bands (nth index from) (nth index to) sign))
       (while pairs
         (setq edge (car pairs) current (caddr edge) next (caddr (cadr pairs))
-              outer (sr:quantity-offset-vertices axis stations start finish (car edge) (cadr edge))
+              outer (sr:style-vertices axis stations start finish (car edge) (cadr edge))
               material (sr:style-material current))
-        (if (and material (sr:quantity-strip-area inner outer sign))
-          (sr:style-solid (append inner (reverse outer))
-            (sr:style-layer (strcat "SR-FILL-" (car material)) (cdr material))))
-        (if (and (sr:style-road-band-p current) (not (sr:style-road-band-p previous))
-                 (or previous (not (sr:style-road-band-p (caddar opposite)))))
-          (sr:style-stripe axis stations start finish inner-first inner-last nil nil))
+        (if material
+          (cond
+            (sr:appearance-preview
+             (sr:preview-path (append inner (reverse outer) (list (car inner))) 9))
+            ((sr:strip-area inner outer sign)
+             (sr:style-solid (append inner (reverse outer))
+               (sr:style-layer (strcat "SR-FILL-" (car material)) (cdr material))))))
         (if (sr:style-road-band-p current)
-          (sr:style-stripe axis stations start finish (car edge) (cadr edge)
-                           (sr:style-road-band-p next) nil))
+          (progn
+            (setq inset (* sign half))
+            (if (not (sr:style-road-band-p previous))
+              (progn
+                (setq group-end (sr:road-group-end pairs)
+                      bounds-from (list inner-first (car group-end))
+                      bounds-to (list inner-last (cadr group-end)))
+                (if (or previous (not (sr:style-road-band-p (caddar opposite))))
+                  (sr:bounded-stripe axis stations start finish (+ inner-first inset) (+ inner-last inset)
+                                    nil nil bounds-from bounds-to half))))
+            (setq shift (if (sr:style-road-band-p next) 0.0 inset))
+            (sr:bounded-stripe axis stations start finish (- (car edge) shift) (- (cadr edge) shift)
+                              (sr:style-road-band-p next) nil bounds-from bounds-to half)))
         (setq inner outer previous current inner-first (car edge) inner-last (cadr edge) pairs (cdr pairs))))
-    (if (and (not (equal sr:appearance-scheme "NoCenter"))
-             (vl-every '(lambda (side) (sr:style-road-band-p (caar side))) from)
-             (vl-every '(lambda (side) (sr:style-road-band-p (caar side))) to))
-      (if (equal sr:appearance-scheme "DoubleYellow")
-        (progn
-          (setq center-offset (* 0.5 (+ (car sr:appearance-dimensions) (cadddr sr:appearance-dimensions))
-                                 (sr:unit-scale)))
-          (sr:style-stripe axis stations start finish center-offset center-offset nil T)
-          (sr:style-stripe axis stations start finish (- center-offset) (- center-offset) nil T))
-        (sr:style-stripe axis stations start finish 0.0 0.0 T
-                         (not (equal sr:appearance-scheme "WhiteDash"))))))
+    (sr:style-center axis stations span from to half)
+    (if (and sr:style-skipped (not sr:appearance-preview))
+      (princ (strcat "\nMarking omitted where it does not fit on pavement, stations "
+                     (rtos start 2 4) " to " (rtos finish 2 4) "."))))
 )
 
 (defun sr:style-owned (owner / set index entity data result)
@@ -3507,18 +3627,22 @@ Could not save the corridor data on alignment "
   result
 )
 
-(defun sr:paintable-spans (axis model owner / span spans groups edges good invalid)
+(defun sr:paintable-spans (axis model owner / span spans groups edges good invalid marker ranges edge pieces sr:trim-allowed)
   (setq spans (sr:spans axis model)
         groups (sr:span-inventory axis spans (sr:old-edges owner)))
   (if groups
     (foreach span spans
-      (setq edges (cdr (assoc span groups)))
+      (setq edges (cdr (assoc span groups)) ranges nil sr:trim-allowed nil)
+      (foreach edge edges
+        (if (setq marker (cdadr (assoc -3 (entget edge '("SR-JUNCTION-EDIT")))))
+          (setq ranges (append ranges (srj:read-ranges marker (list (car span) (cadr span))))
+                sr:trim-allowed T)))
+      (setq pieces (if ranges (sr:span-without-ranges span ranges) (list span)))
       (cond
-        ((vl-some '(lambda (edge) (assoc -3 (entget edge '("SR-JUNCTION-EDIT")))) edges)
-         (princ "\nSkipping manually trimmed span."))
-        ((sr:quantity-span-areas axis span edges) (setq good (cons span good)))
+        ((null pieces) (princ "\nSkipping the fully trimmed span."))
+        ((sr:span-boundaries-valid-p axis span edges) (setq good (append good pieces)))
         (T (setq invalid T)))))
-  (if (not invalid) (reverse good))
+  (if (not invalid) good)
 )
 
 (defun sr:check-paint-layers (spans scheme / span profile side band material)
@@ -3594,19 +3718,22 @@ Could not save the corridor data on alignment "
   (princ)
 )
 
-(defun sr:style-pick (/ hit data owner)
+(defun sr:corridor-source (entity / data owner)
+  (setq data (cdr (assoc -3 (entget entity '("SR-CORRIDOR-EDGE" "SR-ROAD-STYLE" "SR-TRANSIT-ANCHOR"))))
+        owner (cdr (assoc 1005 (cdar data))))
+  (if owner (handent owner) entity)
+)
+
+(defun sr:pick-corridor (/ hit)
   (if (setq hit (entsel "\nSelect a corridor alignment, edge or painted surface: "))
-    (progn
-      (setq data (cdr (assoc -3 (entget (car hit) '("SR-CORRIDOR-EDGE" "SR-ROAD-STYLE"))))
-            owner (cdr (assoc 1005 (cdar data))))
-      (if owner (handent owner) (car hit))))
+    (sr:corridor-source (car hit)))
 )
 
 (defun c:SRSTYLE (/ axis model mode current dimensions)
   (if (and (sr:modelspace-p)
            (or (= 0 (logand 2 (getvar "UNDOCTL")))
                (progn (princ "\nEnable UNDO (All) first.") nil))
-           (setq axis (sr:style-pick)))
+           (setq axis (sr:pick-corridor)))
     (if (sr:model-valid-p (setq model (sr:model axis)))
       (progn
         (setq current (car (sr:style-owned (cdr (assoc 5 (entget axis))))))
@@ -3633,25 +3760,39 @@ Could not save the corridor data on alignment "
   (princ)
 )
 
-(defun sr:road-sketch-preview (points profile / edge pending a b normal delta)
-  (srj:draw-preview points)
-  (foreach edge (sr:profile-offsets profile)
-    (setq pending points)
-    (while (cdr pending)
-      (setq a (car pending) b (cadr pending))
-      (if (> (distance a b) 1e-6)
-        (progn
-          (setq normal (droad:unit-vec (list (- (cadr a) (cadr b)) (- (car b) (car a)) 0.0))
-                delta (srj:scaled normal (car edge)))
-          (srj:draw-preview (list (mapcar '+ a delta) (mapcar '+ b delta)))))
-      (setq pending (cdr pending))))
+;; Keep the same corner offsets in the sketch and on the resulting polyline.
+(defun sr:draft-frames (points / a b frames direction)
+  (while (and (cdr points)
+              (setq b (droad:unit-vec (mapcar '- (cadr points) (car points))))
+              (setq direction (sr:offset-direction a b)))
+    (setq frames (cons (list (car points) direction) frames)
+          a b points (cdr points)))
+  (if (not (cdr points))
+    (reverse (cons (list (car points) (sr:offset-direction a nil)) frames)))
 )
 
-(defun sr:road-sketch (profile / start current pending event done)
+(defun sr:road-sketch-preview (points profile scheme dimensions / sr:preview-frames edge)
+  (sr:preview-path points 3)
+  (if (and (cdr points) (setq sr:preview-frames (sr:draft-frames points)))
+    (progn
+      (foreach edge (sr:profile-offsets profile)
+        (sr:preview-path (sr:draft-offset-path sr:preview-frames (car edge)) 3))
+      (if scheme
+        (sr:road-style-preview nil (list (list 0.0 0.0 profile nil)) scheme dimensions))
+      T))
+)
+
+(defun sr:road-style-preview (axis spans sr:appearance-scheme sr:appearance-dimensions
+                              / sr:appearance-preview)
+  (setq sr:appearance-preview T)
+  (sr:style-spans axis spans)
+)
+
+(defun sr:road-sketch (profile scheme dimensions / start current pending event done)
   (if (setq start (getpoint "\nStart of alignment: "))
     (progn
       (setq start (trans start 1 0) pending (list start))
-      (princ "\nMove the cursor and click to add straight segments. Enter finishes, Backspace removes the last point.")
+      (princ "\nClick to add straight segments. Enter finishes, Backspace removes the last point.")
       (while (not done)
         (setq event (grread T 15 0))
         (cond
@@ -3659,17 +3800,37 @@ Could not save the corridor data on alignment "
            (setq current (trans (cadr event) 1 0)
                  current (list (car current) (cadr current) (caddr start)))
            (redraw)
-           (if (and (= 3 (car event)) (> (distance current (car pending)) 1e-6))
-             (setq pending (cons current pending)))
-           (sr:road-sketch-preview
-             (reverse (if (= 5 (car event)) (cons current pending) pending)) profile))
+           (if (> (distance current (car pending)) 1e-6)
+             (progn
+               (setq current (cons current pending))
+               (if (= 3 (car event)) (setq pending current)))
+             (setq current pending))
+           (sr:road-sketch-preview (reverse current) profile scheme dimensions))
           ((and (= 2 (car event)) (member (cadr event) '(13 32))) (setq done T))
           ((equal event '(2 27)) (setq pending nil done T))
           ((and (equal event '(2 8)) (cdr pending))
-           (setq pending (cdr pending)) (redraw)
-           (sr:road-sketch-preview (reverse pending) profile))))
+           (setq pending (cdr pending))
+           (redraw)
+           (sr:road-sketch-preview (reverse pending) profile scheme dimensions))))
       (redraw)
       (if (cdr pending) (reverse pending))))
+)
+
+(defun sr:create-road-profile (dedicated / active keyword default choice)
+  (if (setq active (sr:quick-profile))
+    (progn
+      (setq keyword (if dedicated "Active" "Last")
+            default (if dedicated keyword "Configure"))
+      (if dedicated
+        (progn
+          (princ "\nActive cross section (drawing units):")
+          (sr:profile-summary active)))
+      (initget (strcat "Configure " keyword))
+      (setq choice (getkword (strcat "\nCross section [Configure/" keyword "] <" default ">: ")))
+      (if (null choice) (setq choice default))))
+  (if (and active (equal choice keyword))
+    active
+    (sr:configure-profile (sr:preset "Road")))
 )
 
 (defun sr:road-appearance-mode (/ mode)
@@ -3678,8 +3839,8 @@ Could not save the corridor data on alignment "
   (if (not (equal mode "Edges")) mode)
 )
 
-(defun c:SRCREATEROAD (/ *error* profile mode selection axes skipped points scheme dimensions total
-                         axis new-axis doc undo built sr:new sr:owner sr:previewing)
+(defun sr:create-road (mode / *error* profile filter selection axes skipped points scheme dimensions total
+                             axis new-axis doc undo built sr:new sr:owner sr:previewing)
   (defun *error* (msg)
     (redraw)
     (if (and new-axis (not built) (entget new-axis)) (entdel new-axis))
@@ -3691,18 +3852,21 @@ Could not save the corridor data on alignment "
     (progn
       (if (= 0 (getvar "INSUNITS"))
         (princ "\nUnitless drawing: default dimensions assume one drawing unit is one meter."))
-      (if (setq profile (sr:configure-profile (sr:preset "Road")))
+      (setq filter '((0 . "LINE,ARC,LWPOLYLINE") (410 . "Model")))
+      (if (not (equal mode "Draw")) (setq selection (ssget "_I" filter)))
+      (if (setq profile (sr:create-road-profile mode))
         (progn
-          (initget "Draw Select")
-          (setq mode (getkword "\nAlignment [Draw/Select] <Select>: "))
-          (if (equal mode "Draw")
-            (setq points (sr:road-sketch profile))
-            (if (setq selection (ssget '((0 . "LINE,ARC,LWPOLYLINE") (410 . "Model"))))
+          (if (null mode)
+            (progn
+              (initget "Draw Select")
+              (setq mode (getkword "\nAlignment [Draw/Select] <Select>: "))))
+          (if (not (equal mode "Draw"))
+            (if (or selection (setq selection (ssget filter)))
               (setq axes (sr:quick-axes selection)
                     skipped (- (sslength selection) (length axes)))))
           (if (and skipped (> skipped 0))
             (princ (strcat "\nSkipped " (itoa skipped) " managed, locked or unsuitable alignments.")))
-          (if (or points axes)
+          (if (or (equal mode "Draw") axes)
             (progn
               (setq scheme (sr:road-appearance-mode) dimensions (sr:style-dimensions nil)
                     total (apply '+ (append (mapcar 'cadr (car profile)) (mapcar 'cadr (cadr profile)))))
@@ -3715,35 +3879,49 @@ Could not save the corridor data on alignment "
                             (sr:style-dimension-input "Dash length" (cadr dimensions))
                             (sr:style-dimension-input "Gap between dashes" (caddr dimensions))
                             (sr:style-dimension-input "Clear gap between double stripes" (cadddr dimensions)))))))
-              (princ (strcat "\n" (itoa (if points 1 (length axes)))
-                " road(s), total width per road " (rtos (/ total (sr:unit-scale)) 2 4) " m."))
-              (if points (sr:road-sketch-preview points profile)
-                (progn (setq sr:previewing T)
-                  (foreach axis axes (sr:render axis (list profile nil)))
-                  (setq sr:previewing nil)))
-              (initget "Build Cancel")
-              (if (equal "Build" (getkword "\n[Build/Cancel] <Cancel>: "))
+              (if (equal mode "Draw") (setq points (sr:road-sketch profile scheme dimensions)))
+              (if (or points axes)
                 (progn
-                  (redraw)
+                  (princ (strcat "\n" (itoa (if points 1 (length axes)))
+                    " road(s), total width per road " (rtos total 2 4)
+                    " drawing units (" (rtos (/ total (sr:unit-scale)) 2 4) " m)."))
                   (if points
+                    (if (not (sr:road-sketch-preview points profile scheme dimensions))
+                      (progn (princ "\nThe alignment has a sharp bend that cannot retain the section width.") (exit)))
                     (progn
-                      (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
-                      (if (= 0 (logand 8 (getvar "UNDOCTL")))
-                        (progn (vla-StartUndoMark doc) (setq undo T)))
-                      (setq new-axis (sr:poly points nil (getvar "CLAYER")) axes (list new-axis))))
-                  (setq built (sr:quick-build axes profile scheme dimensions))
-                  (if (and new-axis (not built) (entget new-axis)) (entdel new-axis))
-                  (if undo (progn (vla-EndUndoMark doc) (setq undo nil)))
-                  (if built
-                    (progn (sr:remember-quick-profile profile)
-                      (princ (strcat "\nCreated " (itoa (length axes)) " road corridor(s)."))))))
-              (redraw)))))))
+                      (setq sr:previewing T)
+                      (foreach axis axes
+                        (sr:render axis (list profile nil))
+                        (if scheme
+                          (sr:road-style-preview axis (sr:spans axis (list profile nil)) scheme dimensions)))
+                      (setq sr:previewing nil)))
+                  (initget "Build Cancel")
+                  (if (equal "Build" (getkword "\n[Build/Cancel] <Cancel>: "))
+                    (progn
+                      (redraw)
+                      (if points
+                        (progn
+                          (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
+                          (if (= 0 (logand 8 (getvar "UNDOCTL")))
+                            (progn (vla-StartUndoMark doc) (setq undo T)))
+                          (setq new-axis (sr:poly points nil (getvar "CLAYER"))
+                                axes (list new-axis))))
+                      (setq built (sr:quick-build axes profile scheme dimensions))
+                      (if (and new-axis (not built) (entget new-axis)) (entdel new-axis))
+                      (if undo (progn (vla-EndUndoMark doc) (setq undo nil)))
+                      (if built
+                        (progn
+                          (sr:remember-quick-profile profile)
+                          (princ (strcat "\nCreated " (itoa (length axes)) " road corridor(s)."))))))
+                  (redraw)))))))))
   (princ)
 )
 
+(defun c:SRDRAWROAD () (sr:create-road "Draw"))
+(defun c:SRBUILDROAD () (sr:create-road "Select"))
+(defun c:SRCREATEROAD () (sr:create-road nil))
+
+(vl-catch-all-apply 'droad:toolbar (list nil))
 (vl-catch-all-apply 'droad:hide-toolbar nil)
-(princ "\nSmart Road loaded. Commands: SMARTROADTOOLBAR, SMARTROAD, DROAD, RNET.")
-(princ "\nCorridor tools: SRROAD, SRWALK, SRTRANSIT, SRJUNCTION, SREDIT.")
-(princ "\nQuick tools: SRQUICK, SRPROFILE, SRSECTION. Road appearance: SRSTYLE.")
-(princ "\nJunction and reporting: SRCONNECT, SRQUANTITY.")
+(princ "\nSmart Road loaded. Use the Smart Road ribbon or SRDRAWROAD, SRBUILDROAD, SRPROFILE.")
 (princ)
