@@ -546,13 +546,8 @@
 )
 
 (defun droad:settings (/ width radius)
-  (initget 6)
-  (setq width (getdist (strcat "\nRoad width <" (rtos *droad-width* 2 2) ">: ")))
-  (initget 4)
-  (setq radius (getdist (strcat "\nJunction fillet radius, 0 for square corners <"
-                               (rtos *droad-fillet* 2 2) ">: ")))
-  (if width (setq *droad-width* width))
-  (if radius (setq *droad-fillet* radius))
+  (setq *droad-width* (sr:number "Road width" *droad-width* nil)
+        *droad-fillet* (sr:number "Junction fillet radius, 0 for square corners" *droad-fillet* T))
 )
 
 (defun droad:restore (doc vars undo-open / item)
@@ -648,7 +643,7 @@
     '("smart_road : dialog {"
       "  label = \"Smart Road\";"
       "  : boxed_column {"
-      "    label = \"Road settings (drawing units)\";"
+      "    label = \"Road settings (meters)\";"
       "    : edit_box { key = \"width\"; label = \"Full road width\"; edit_width = 14; }"
       "    : edit_box { key = \"radius\"; label = \"Junction fillet radius\"; edit_width = 14; }"
       "    : text { label = \"Set the radius to 0 for square corners.\"; }"
@@ -668,12 +663,8 @@
 (defun droad:accept-dialog (choice / width-text radius-text width radius)
   (setq width-text (vl-string-trim " " (get_tile "width"))
         radius-text (vl-string-trim " " (get_tile "radius"))
-        width (if (= width-text (rtos *droad-width* 2 8))
-                *droad-width*
-                (distof width-text 2))
-        radius (if (= radius-text (rtos *droad-fillet* 2 8))
-                 *droad-fillet*
-                 (distof radius-text 2)))
+        width (sr:tile-meters width-text *droad-width*)
+        radius (sr:tile-meters radius-text *droad-fillet*))
   (cond
     ((or (null width) (<= width 0.0))
      (set_tile "message" "Enter a road width greater than 0.")
@@ -708,8 +699,8 @@
       (setq file nil dialog-id (load_dialog path))
       (if (and (> dialog-id 0) (new_dialog "smart_road" dialog-id))
         (progn
-          (set_tile "width" (rtos *droad-width* 2 8))
-          (set_tile "radius" (rtos *droad-fillet* 2 8))
+          (set_tile "width" (sr:meters-text *droad-width*))
+          (set_tile "radius" (sr:meters-text *droad-fillet*))
           (action_tile "width" "(set_tile \"message\" \"\")")
           (action_tile "radius" "(set_tile \"message\" \"\")")
           (action_tile "draw" "(droad:accept-dialog 1)")
@@ -886,10 +877,26 @@
     ("BRT" 3.5 1) ("Curb" 0.15 8) ("Walkway" 2.0 3)
     ("Rail" 1.435 6) ("TrackGap" 2.0 8) ("Platform" 3.0 5)))
 
+;; Every length prompt asks in meters. DEFAULT and the result are drawing
+;; units, so callers stay in drawing units; DEFAULT may be nil (no default).
 (defun sr:number (label default allow-zero / value)
   (initget (if allow-zero 4 6))
-  (setq value (getreal (strcat "\n" label " <" (rtos default 2 4) ">: ")))
-  (if value value default)
+  (setq value (getreal (strcat "\n" label ", m"
+                               (if default (strcat " <" (rtos (/ default (sr:unit-scale)) 2 4) ">") "")
+                               ": ")))
+  (if value (* value (sr:unit-scale)) default)
+)
+
+(defun sr:meters-text (length)
+  (rtos (/ length (sr:unit-scale)) 2 8)
+)
+
+;; A dialog field holding meters: keep CURRENT when the text is unchanged so
+;; round-tripping through text does not alter the stored drawing-unit value.
+(defun sr:tile-meters (text current / value)
+  (cond
+    ((and current (equal text (sr:meters-text current))) current)
+    ((setq value (distof text 2)) (* value (sr:unit-scale))))
 )
 
 (defun sr:preset-metres (group / option)
@@ -961,9 +968,9 @@
 
 (defun sr:profile-summary (profile / side text band)
   (foreach side profile
-    (setq text (if text "\nRight:" "\nLeft:"))
+    (setq text (if text "\nRight (m):" "\nLeft (m):"))
     (foreach band side
-      (setq text (strcat text " " (car band) " " (rtos (cadr band) 2 4))))
+      (setq text (strcat text " " (car band) " " (rtos (/ (cadr band) (sr:unit-scale)) 2 4))))
     (princ (if side text (strcat text " (empty)")))
   )
 )
@@ -1006,7 +1013,9 @@
                  (list (list kind (sr:number "Band width" (* (sr:unit-scale) (cadr spec)) nil)))
                  (sr:drop (1- index) side))))))))
       (T (princ "\nA side can have up to 16 bands.")))
-    (princ (strcat "\n" label " (from alignment outward): " (vl-prin1-to-string side)))
+    (princ (strcat "\n" label " (from alignment outward, m): "
+                   (vl-prin1-to-string
+                     (mapcar '(lambda (band) (list (car band) (/ (cadr band) (sr:unit-scale)))) side))))
   )
   side
 )
@@ -1632,13 +1641,11 @@
 
 (defun sr:range (axis / first last length)
   (setq length (sr:length axis))
-  (princ (strcat "\nAlignment length: " (rtos length 2 4)))
-  (initget 4)
-  (setq first (getreal "\nStart distance from alignment start: "))
+  (princ (strcat "\nAlignment length: " (rtos (/ length (sr:unit-scale)) 2 4) " m"))
+  (setq first (sr:number "Start distance from alignment start" nil T))
   (if first
     (progn
-      (initget 6)
-      (setq last (getreal "\nEnd distance from alignment start: "))
+      (setq last (sr:number "End distance from alignment start" nil nil))
       (if (and last (< first last) (<= last length))
         (list first last)
         (progn (princ "\nEnter an increasing range within the alignment.") nil))))
@@ -1739,7 +1746,8 @@
   (princ)
 )
 
-;; Plan features use a user-picked local XY frame, with dimensions in drawing units.
+;; Plan features use a user-picked local XY frame. Prompts take meters; the
+;; geometry works in drawing units.
 (defun sr:local (origin direction x y)
   (list (+ (car origin) (* x (car direction)) (* y (- (cadr direction))))
         (+ (cadr origin) (* x (cadr direction)) (* y (car direction)))
@@ -2064,7 +2072,7 @@
         (initget "Left Right")
         (setq side (getkword "\nSide of alignment [Left/Right] <Right>: ")
               sign (if (equal side "Left") 1.0 -1.0)
-              gap (sr:number "Clearance from corridor edge (drawing units)" 0.0 T)
+              gap (sr:number "Clearance from corridor edge" 0.0 T)
               length (sr:number "Feature length" (sr:default (if (equal kind "Stop") 'stop-length 'platform-length)) nil)
               width (sr:number "Feature width" (sr:default (if (equal kind "Stop") 'stop-width 'platform-width)) nil)
               values (list station sign gap length width)
@@ -2140,7 +2148,7 @@
               a (sr:side-width profile 0)
               b (sr:side-width profile 1))
         (progn
-          (setq width (sr:number "Arm width (drawing units)"
+          (setq width (sr:number "Arm width"
                          (droad:get-width-xdata axis (sr:default 'road-width)) nil)
                 a (* 0.5 width) b a)))
       ;; Left and right widths follow the station direction; swap them for an arm running backwards.
@@ -2211,12 +2219,12 @@
       (setq origin (trans origin 1 0))
       (initget "Three Four")
       (setq count (if (equal "Four" (getkword "\nNumber of arms [Three/Four] <Three>: ")) 4 3)
-            tolerance (sr:number "Centerline tolerance (drawing units)" (sr:default 'centerline-tolerance) T))
+            tolerance (sr:number "Centerline tolerance" (sr:default 'centerline-tolerance) T))
       (repeat count
         (if (setq arm (srj:road-arm origin tolerance))
           (setq arms (cons arm arms))
           (exit)))
-      (setq radius (sr:number "Corner radius (drawing units)" (sr:default 'junction-radius) T))
+      (setq radius (sr:number "Corner radius" (sr:default 'junction-radius) T))
       (if (setq plan (srj:road-layout origin arms radius))
         (foreach item plan
           (sr:plan-geometry 'sr:poly (list (car item) nil "SR-JUNCTION"))
@@ -2247,7 +2255,7 @@
   (foreach line
     '("sr_profile : dialog {"
       "  label = \"Smart Road - Cross Section\";"
-      "  : text { label = \"Bands are listed from the alignment outward. Widths use drawing units.\"; }"
+      "  : text { label = \"Bands are listed from the alignment outward. Widths are in meters.\"; }"
       "  : row {"
       "    : boxed_column { label = \"Left of alignment\";"
       "      : list_box { key = \"left\"; width = 32; height = 10; tabs = \"19\"; }"
@@ -2282,7 +2290,7 @@
 (defun sr:profile-ui-list (key bands / band)
   (start_list key)
   (foreach band bands
-    (add_list (strcat (car band) "\t" (rtos (cadr band) 2 8))))
+    (add_list (strcat (car band) "\t" (rtos (/ (cadr band) (sr:unit-scale)) 2 4))))
   (end_list)
 )
 
@@ -2300,7 +2308,7 @@
   (if band
     (progn
       (set_tile "kind" (itoa (- (length sr:bands) (length (member (assoc (car band) sr:bands) sr:bands)))))
-      (set_tile "width" (rtos (cadr band) 2 8))))
+      (set_tile "width" (sr:meters-text (cadr band)))))
 )
 
 (defun sr:profile-ui-refresh (side index)
@@ -2331,15 +2339,13 @@
       (setq kind (car (nth (atoi (get_tile "kind")) sr:bands))
             old-band (if (equal action "update") (nth index bands))
             raw (vl-string-trim " " (get_tile "width"))
-            width (if (and old-band (equal raw (rtos (cadr old-band) 2 8)))
-                    (cadr old-band)
-                    (distof raw 2)))))
+            width (sr:tile-meters raw (if old-band (cadr old-band))))))
   (cond
     ((null index) nil)
     ((and (member action '("add" "insert")) (>= (length bands) 16))
      (set_tile "status" "A side can contain up to 16 bands."))
     ((and (not (equal action "remove")) (or (null width) (<= width 0.0)))
-     (set_tile "status" "Enter a positive width in drawing units.")
+     (set_tile "status" "Enter a positive width in meters.")
      (mode_tile "width" 2)
      (mode_tile "width" 3))
     (T
@@ -2423,10 +2429,10 @@
       (foreach band sr:bands (add_list (car band)))
       (end_list)
       (set_tile "kind" "0")
-      (set_tile "width" (rtos (* (sr:unit-scale) (cadar sr:bands)) 2 8))
+      (set_tile "width" (rtos (cadar sr:bands) 2 8))
       (sr:profile-ui-refresh (if (car sr:ui-profile) 0 1)
                             (if (or (car sr:ui-profile) (cadr sr:ui-profile)) 0))
-      (action_tile "kind" "(set_tile \"width\" (rtos (* (sr:unit-scale) (cadr (nth (atoi $value) sr:bands))) 2 8))")
+      (action_tile "kind" "(set_tile \"width\" (rtos (cadr (nth (atoi $value) sr:bands)) 2 8))")
       (action_tile "left" "(sr:profile-ui-pick 0 $value)")
       (action_tile "right" "(sr:profile-ui-pick 1 $value)")
       (action_tile "add_left" "(sr:profile-ui-edit \"add\" 0)")
@@ -3095,9 +3101,9 @@ Could not save the corridor data on alignment "
 
 (defun srj:preview (plan / corner height size)
   (if (> (nth 4 plan) 1e-6)
-    (princ (strcat "\nThe corner is " (rtos (nth 4 plan) 2 4) " units beyond the first edge.")))
+    (princ (strcat "\nThe corner is " (rtos (/ (nth 4 plan) (sr:unit-scale)) 2 4) " m beyond the first edge.")))
   (if (> (nth 5 plan) 1e-6)
-    (princ (strcat "\nThe corner is " (rtos (nth 5 plan) 2 4) " units beyond the second edge.")))
+    (princ (strcat "\nThe corner is " (rtos (/ (nth 5 plan) (sr:unit-scale)) 2 4) " m beyond the second edge.")))
   (srj:draw-preview (car plan))
   (srj:draw-preview (cadr plan))
   (if (caddr plan) (srj:draw-preview (srj:arc-points (caddr plan))))
@@ -3827,7 +3833,7 @@ Could not save the corridor data on alignment "
 
 (defun sr:style-dimension-input (label current / value)
   (initget 6)
-  (setq value (getreal (strcat "\n" label " in meters <" (rtos current 2 8) ">: ")))
+  (setq value (getreal (strcat "\n" label ", m <" (rtos current 2 4) ">: ")))
   (if value value current)
 )
 
@@ -3956,7 +3962,7 @@ Could not save the corridor data on alignment "
             default (if dedicated keyword "Configure"))
       (if dedicated
         (progn
-          (princ "\nActive cross section (drawing units):")
+          (princ "\nActive cross section:")
           (sr:profile-summary active)))
       (initget (strcat "Configure " keyword))
       (setq choice (getkword (strcat "\nCross section [Configure/" keyword "] <" default ">: ")))
@@ -4011,8 +4017,8 @@ Could not save the corridor data on alignment "
               (if (or points axes)
                 (progn
                   (princ (strcat "\n" (itoa (if points 1 (length axes)))
-                    " road(s), total width per road " (rtos total 2 4)
-                    " drawing units (" (rtos (/ total (sr:unit-scale)) 2 4) " m)."))
+                    " road(s), total width per road " (rtos (/ total (sr:unit-scale)) 2 4)
+                    " m (" (rtos total 2 4) " drawing units)."))
                   (if points
                     (if (not (sr:road-sketch-preview points profile scheme dimensions))
                       (progn (princ "\nThe alignment has a sharp bend that cannot retain the section width.") (exit)))

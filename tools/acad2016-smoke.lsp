@@ -78,6 +78,11 @@
   (srsmoke:check "center ltscale follows LTSCALE"
     (* 1000.0 (droad:center-ltscale)) (/ (* 50.8 scale) (cdr (assoc 40 (tblsearch "LTYPE" "CENTER")))))
   (srsmoke:check "unitless warning returns T" (sr:warn-unitless) T)
+  (srsmoke:check "meters text" (sr:meters-text (* 3.5 scale)) (rtos 3.5 2 8))
+  (srsmoke:check "dialog keeps unchanged value"
+    (sr:tile-meters (sr:meters-text (/ scale 3.0)) (/ scale 3.0)) (/ scale 3.0))
+  (srsmoke:check "dialog reads meters" (sr:tile-meters "2.5" nil) (* 2.5 scale))
+  (srsmoke:check "dialog rejects text" (sr:tile-meters "abc" nil) nil)
 )
 
 (defun c:SRSMOKECHECK (/ doc insunits ltscale saved)
