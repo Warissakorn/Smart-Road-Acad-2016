@@ -1129,15 +1129,23 @@
          (droad:ccw-diff 0.0 (droad:wcs-angle center q)) layer)
 )
 
-(defun sr:offset-direction (a b / na nb miter divisor)
+(defun sr:miter-direction (a b clamp / na nb miter divisor)
   (if (not a) (setq a b))
   (if (not b) (setq b a))
   (setq na (list (- (cadr a)) (car a) 0.0)
         nb (list (- (cadr b)) (car b) 0.0)
         miter (droad:unit-vec (mapcar '+ na nb))
         divisor (apply '+ (mapcar '* miter na)))
-  (if (>= divisor 0.2)
-    (mapcar '(lambda (component) (/ component divisor)) miter))
+  (if (or clamp (>= divisor 0.2))
+    (mapcar '(lambda (component) (/ component (max 0.2 divisor))) miter))
+)
+
+(defun sr:offset-direction (a b)
+  (sr:miter-direction a b nil)
+)
+
+(defun sr:clamped-offset-direction (a b)
+  (sr:miter-direction a b T)
 )
 
 (defun sr:sampled-offset-at (axis station offset / length pt before after a b direction)
@@ -1150,6 +1158,9 @@
   (cond
     ((equal offset 0.0 1e-10) pt)
     ((setq direction (sr:offset-direction a b)) (mapcar '+ pt (srj:scaled direction offset)))
+    ;; Existing edges from earlier versions used a clamped miter; match them when checking.
+    ((not sr:strict-bends)
+     (mapcar '+ pt (srj:scaled (sr:clamped-offset-direction a b) offset)))
     (T (princ (strcat "\nCannot maintain the section width at the sharp bend near station "
                       (rtos station 2 4) ". Round the alignment before building."))
        (exit)))
@@ -1334,7 +1345,8 @@
   good
 )
 
-(defun sr:render-spans (axis spans / sr:span sr:edge-signature)
+(defun sr:render-spans (axis spans / sr:span sr:edge-signature sr:strict-bends)
+  (setq sr:strict-bends T)
   (if sr:owner (setq sr:edge-signature (sr:axis-signature axis)))
   (foreach sr:span spans
     (if (not (sr:span-safe-p axis sr:span))
@@ -1441,7 +1453,7 @@
 )
 
 (defun sr:apply-spans (axis model spans old / *error* sr:new sr:owner sr:previewing doc undo erased entity prior written appearance scheme paintable
-                         transit all-spans)
+                         transit all-spans stranded)
   (defun *error* (msg)
     (foreach entity sr:new (if (entget entity) (entdel entity)))
     (foreach entity erased (if (not (entget entity)) (entdel entity)))
@@ -1457,8 +1469,15 @@
   (cond
     ((> (strlen (vl-prin1-to-string model)) 10000)
      (princ "\nThis alignment has too much profile data. Use a separate alignment.") nil)
-    ((vl-some '(lambda (item) (> (car (sr:extent (sr:transit-data item))) (sr:length axis))) transit)
-     (princ "\nA linked transit station is beyond the new end. Reposition the feature before rebuilding.") nil)
+    ((and transit
+          (setq all-spans (sr:spans axis model)
+                stranded (vl-some '(lambda (item / values)
+                                     (setq values (sr:extent (sr:transit-data item)))
+                                     (if (not (sr:transit-frame axis all-spans values))
+                                       (if (numberp (car values)) (car values) -1.0)))
+                                  transit)))
+     (princ (strcat "\nA linked transit feature at station " (rtos stranded 2 4)
+                    " is outside the rebuilt corridor. Reposition or erase it before rebuilding.")) nil)
     ((not (vl-every 'sr:writable-p (cons axis (append old appearance transit))))
      (princ "\nUnlock the alignment and affected corridor layers before building.") nil)
     ((/= 0 (logand 2 (getvar "UNDOCTL")))
@@ -1476,7 +1495,6 @@
      (sr:render-spans axis spans)
      (if transit
        (progn
-         (setq all-spans (sr:spans axis model))
          (foreach entity transit
            (sr:write-transit axis all-spans (sr:transit-data entity) (cdr (assoc 8 (entget entity)))))))
      (foreach entity (append old transit)
@@ -2004,7 +2022,8 @@
   (apply '+ (cons 0.0 (mapcar 'cadr (nth side profile))))
 )
 
-(defun srj:road-arm (origin tolerance / hit axis at pick position direction model span profile a b width forward)
+(defun srj:road-arm (origin tolerance / hit axis at pick position direction model span profile a b width forward
+                                       step ahead reach)
   (if (and (setq hit (entsel "\nPick an alignment on the side that leaves the junction: "))
            (setq axis (sr:corridor-source (car hit)))
            (member (cdr (assoc 0 (entget axis))) '("LINE" "ARC" "LWPOLYLINE"))
@@ -2015,8 +2034,12 @@
            (<= (distance position origin) tolerance)
            (> (abs (- pick at)) 1e-6))
     (progn
-      (setq direction (sr:alignment-direction axis at)
-            forward (> pick at)
+      ;; Sample only the picked side so a vertex at the junction gives that segment's direction.
+      (setq forward (> pick at)
+            reach (if forward (- (sr:length axis) at) at)
+            step (min (* 0.001 (sr:unit-scale)) reach)
+            ahead (vlax-curve-getPointAtDist axis (if forward (+ at step) (- at step)))
+            direction (droad:unit-vec (mapcar '- ahead position))
             model (sr:model axis))
       (if (and (sr:model-valid-p model) (setq span (sr:span-at-station (sr:spans axis model) at)))
         (setq profile (sr:profile-at-station span at)
@@ -2026,9 +2049,11 @@
           (setq width (sr:number "Arm width (drawing units)"
                          (droad:get-width-xdata axis (* 7.0 (sr:unit-scale))) nil)
                 a (* 0.5 width) b a)))
+      ;; Left and right widths follow the station direction; swap them for an arm running backwards.
       (if (not forward)
-        (setq direction (srj:scaled direction -1.0) width a a b b width))
-      (list (droad:ccw-diff 0.0 (atan (cadr direction) (car direction))) direction a b (abs (- pick at))))
+        (setq width a a b b width))
+      ;; Reach limits where the corner may fall; the pick distance sets how far the arm is drawn.
+      (list (droad:ccw-diff 0.0 (atan (cadr direction) (car direction))) direction a b reach (abs (- pick at))))
     (if hit
       (princ "\nChoose an open horizontal alignment passing through the junction on the same level.")))
 )
@@ -2038,8 +2063,8 @@
         u (cadr first) v (cadr second)
         a (sr:local origin u 0.0 (caddr first))
         b (sr:local origin v 0.0 (- (cadddr second)))
-        far-a (sr:local a u (nth 4 first) 0.0)
-        far-b (sr:local b v (nth 4 second) 0.0))
+        far-a (sr:local a u (nth 5 first) 0.0)
+        far-b (sr:local b v (nth 5 second) 0.0))
   (cond
     ((<= gap 1e-6) nil)
     ((>= gap (- pi 1e-7))
@@ -2051,9 +2076,13 @@
      (if (and (or (<= radius 0.0) fillet)
               (< (srj:dot (mapcar '- p a) u) (- (nth 4 first) 1e-6))
               (< (srj:dot (mapcar '- q b) v) (- (nth 4 second) 1e-6)))
+       (progn
+         ;; Draw each arm at least past its tangent point, even when the pick was closer.
+         (setq far-a (sr:local a u (max (nth 5 first) (srj:dot (mapcar '- p a) u)) 0.0)
+               far-b (sr:local b v (max (nth 5 second) (srj:dot (mapcar '- q b) v)) 0.0))
        (if fillet
          (list (list far-a p) (list q far-b) fillet)
-         (list (list far-a corner far-b) nil nil)))))
+         (list (list far-a corner far-b) nil nil))))))
 )
 
 (defun srj:layout-outline (plan / result item path arc)
@@ -2905,23 +2934,23 @@ Could not save the corridor data on alignment "
     (srj:put-marker data entry))
 )
 
-(defun srj:edge-trim-ranges (edge points / source extent data prior first last cut-start cut-end result)
+(defun srj:edge-trim-ranges (edge points / source extent data prior start-point end-point cut-start cut-end result)
   (if (and (nth 4 edge) (= 2 (length (setq extent (sr:extent (nth 4 edge))))))
     (progn
       (setq data (cadr edge)
             prior (assoc "SR-JUNCTION-EDIT" (cdr (assoc -3 data)))
             source (handent (cdr (assoc 1005 (nth 4 edge))))
-            first (if (srj:arc-edge-p edge) (vlax-curve-getStartPoint (car edge)) (car (caddr edge)))
-            last (if (srj:arc-edge-p edge) (vlax-curve-getEndPoint (car edge)) (last (caddr edge))))
-      (if prior (setq result (srj:read-ranges prior extent)))
+            start-point (if (srj:arc-edge-p edge) (vlax-curve-getStartPoint (car edge)) (car (caddr edge)))
+            end-point (if (srj:arc-edge-p edge) (vlax-curve-getEndPoint (car edge)) (last (caddr edge))))
+      (if prior (setq result (srj:read-ranges (cdr prior) extent)))
       (if (and source (= 2 (length extent)))
         (progn
-          (if (not (equal first (car points) 1e-6))
+          (if (not (equal start-point (car points) 1e-6))
             (if (setq cut-start (sr:station-at-wcs source (car points)))
               (if (> (min cut-start (cadr extent)) (+ (car extent) 1e-6))
                 (setq result (cons (list (car extent) (min cut-start (cadr extent))) result)))
               (setq result (list extent))))
-          (if (not (equal last (last points) 1e-6))
+          (if (not (equal end-point (last points) 1e-6))
             (if (setq cut-end (sr:station-at-wcs source (last points)))
               (if (< (max cut-end (car extent)) (- (cadr extent) 1e-6))
                 (setq result (cons (list (max cut-end (car extent)) (cadr extent)) result)))
@@ -3009,23 +3038,28 @@ Could not save the corridor data on alignment "
   result
 )
 
-(defun srj:repaint-owner (owner extents appearance / axis model spans entity scheme legacy)
+;; Returns T when the affected spans were repainted, or were checked and need no paint.
+(defun srj:repaint-owner (owner extents appearance / axis model paintable spans entity scheme legacy)
   (if (and appearance (setq axis (handent owner)) (sr:model-valid-p (setq model (sr:model axis))))
     (progn
       (setq entity (car appearance) scheme (sr:style-scheme entity)
             legacy (vl-some '(lambda (obj)
               (not (sr:extent (cdadr (assoc -3 (entget obj '("SR-ROAD-STYLE"))))))) appearance)
-            spans (sr:paintable-spans axis model owner))
+            paintable (sr:paintable-spans axis model owner)
+            spans paintable)
       (if (and spans (not legacy) (not (member nil extents)))
         (setq spans (vl-remove-if-not
           '(lambda (span) (vl-some '(lambda (range) (sr:ranges-overlap-p range span)) extents))
           spans)))
-      (if (and spans scheme)
-        (sr:style-render axis spans owner scheme (sr:style-dimensions entity)))))
+      (cond
+        ((not (and scheme paintable)) nil)
+        (spans (sr:style-render axis spans owner scheme (sr:style-dimensions entity)) T)
+        (T T))))
 )
 
 (defun srj:apply (first second plan ranges-a ranges-b / *error* doc undo first-changed second-changed
-                  arc fillet appearance erased entity owner-a owner-b sr:new extents-a extents-b old-a old-b)
+                  arc fillet appearance erased entity owner-a owner-b sr:new extents-a extents-b old-a old-b
+                  repainted)
   (defun *error* (msg)
     (if arc (entdel arc))
     (foreach entity sr:new (if (entget entity) (entdel entity)))
@@ -3064,13 +3098,18 @@ Could not save the corridor data on alignment "
                        '(100 . "AcDbArc") (cons 50 (cadddr fillet)) (cons 51 (nth 4 fillet))))
       (setq arc (entlast))
       (progn (princ "\nCould not create the corner arc.") (exit))))
-  (srj:repaint-owner owner-a extents-a old-a)
-  (srj:repaint-owner owner-b extents-b old-b)
+  ;; Repaint both owners even when the first one fails.
+  (setq repainted (or (null old-a) (srj:repaint-owner owner-a extents-a old-a)))
+  (if (and old-b (not (srj:repaint-owner owner-b extents-b old-b)))
+    (setq repainted nil))
   (foreach entity appearance
     (if (entdel entity) (setq erased (cons entity erased)) (exit)))
   (if undo (vla-EndUndoMark doc))
   (setq undo nil first-changed nil second-changed nil arc nil erased nil)
-  (if appearance (princ "\nRefreshed appearance around the trimmed corner."))
+  (if appearance
+    (princ (if repainted
+             "\nRefreshed appearance around the trimmed corner."
+             "\nCleared appearance around the trimmed corner. Corridor edges could not be checked; fix them and run Surface & Markings to repaint.")))
   (entupd (car first))
   (entupd (car second))
   (princ "\nRoad edges connected.")
