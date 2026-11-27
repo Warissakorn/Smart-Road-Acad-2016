@@ -3780,6 +3780,13 @@ Could not save the corridor data on alignment "
     (sr:default-m 'marking))
 )
 
+(defun sr:prompt-marking-dimensions (dimensions)
+  (list (sr:style-dimension-input "Stripe width" (car dimensions))
+        (sr:style-dimension-input "Dash length" (cadr dimensions))
+        (sr:style-dimension-input "Gap between dashes" (caddr dimensions))
+        (sr:style-dimension-input "Clear gap between double stripes" (cadddr dimensions)))
+)
+
 (defun sr:style-dimension-input (label current / value)
   (initget 6)
   (setq value (getreal (strcat "\n" label " in meters <" (rtos current 2 8) ">: ")))
@@ -3845,10 +3852,7 @@ Could not save the corridor data on alignment "
             (initget "Keep Set")
             (if (equal "Set" (getkword "\nMarking dimensions [Keep/Set] <Keep>: "))
               (setq dimensions
-                (list (sr:style-dimension-input "Stripe width" (car dimensions))
-                      (sr:style-dimension-input "Dash length" (cadr dimensions))
-                      (sr:style-dimension-input "Gap between dashes" (caddr dimensions))
-                      (sr:style-dimension-input "Clear gap between double stripes" (cadddr dimensions)))))
+                (sr:prompt-marking-dimensions dimensions)))
             (sr:style-change axis model mode dimensions))))
       (princ "\nSelect the source alignment of a Smart Road corridor.")))
   (princ)
@@ -3969,10 +3973,7 @@ Could not save the corridor data on alignment "
                   (initget "Default Set")
                   (if (equal "Set" (getkword "\nMarking dimensions [Default/Set] <Default>: "))
                     (setq dimensions
-                      (list (sr:style-dimension-input "Stripe width" (car dimensions))
-                            (sr:style-dimension-input "Dash length" (cadr dimensions))
-                            (sr:style-dimension-input "Gap between dashes" (caddr dimensions))
-                            (sr:style-dimension-input "Clear gap between double stripes" (cadddr dimensions)))))))
+                      (sr:prompt-marking-dimensions dimensions)))))
               (if (equal mode "Draw") (setq points (sr:road-sketch profile scheme dimensions)))
               (if (or points axes)
                 (progn
