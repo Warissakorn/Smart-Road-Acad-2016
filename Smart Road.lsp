@@ -1266,7 +1266,7 @@
     ("ft-us" "SurveyFeet" 3.280833333333333)))
 
 (defun sr:unit-factor (unit)
-  (if (= (type unit) 'STR) (caddr (assoc unit sr:units)))
+  (if (eq (type unit) 'STR) (caddr (assoc unit sr:units)))
 )
 
 (defun sr:valid-units-p (units)
