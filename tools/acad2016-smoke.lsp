@@ -113,6 +113,8 @@
      (droad:ensure-layers doc)
      (if (not (tblsearch "LTYPE" "CENTER"))
        (princ "\nCENTER linetype could not be loaded; linetype checks will fail."))
+     (srsmoke:check "all legacy physical unit choices retained" (length sr:units) 21)
+     (srsmoke:check "mile unit factor" (sr:unit-factor "mi") (/ 1.0 1609.344))
      (srsmoke:units "m" 1.0)
      (srsmoke:units "mm" 1000.0)
      (srsmoke:units "ft" (/ 1.0 0.3048))
