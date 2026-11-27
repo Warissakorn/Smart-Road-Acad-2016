@@ -1537,8 +1537,7 @@
            prior (entget axis '("SR-CORRIDOR")))
      (if (not (assoc -3 prior))
        (setq prior (append prior (list (list -3 (list "SR-CORRIDOR"))))))
-     (if (= 0 (logand 8 (getvar "UNDOCTL")))
-       (progn (vla-StartUndoMark doc) (setq undo T)))
+     (setq undo (sr:begin-undo doc))
      (regapp "SR-CORRIDOR") (regapp "SR-CORRIDOR-EDGE")
      (sr:render-spans axis spans)
      (if transit
@@ -1568,6 +1567,13 @@
     (progn
       (princ "\nCorridor built. Select the original alignment with SREDIT to modify it.")
       T))
+)
+
+;; Open an undo group unless one is already open. Returns T only when this
+;; call opened it, so the caller knows to close it.
+(defun sr:begin-undo (doc)
+  (if (= 0 (logand 8 (getvar "UNDOCTL")))
+    (progn (vla-StartUndoMark doc) T))
 )
 
 (defun sr:modelspace-p ()
@@ -2041,8 +2047,7 @@
             (if (equal "Build" (getkword "\nLinked feature preview [Build/Cancel] <Cancel>: "))
               (progn
                 (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
-                (if (= 0 (logand 8 (getvar "UNDOCTL")))
-                  (progn (vla-StartUndoMark doc) (setq undo T)))
+                (setq undo (sr:begin-undo doc))
                 (regapp "SR-TRANSIT-ANCHOR")
                 (setq layer (sr:layer (strcat "SR-" (strcase kind)) 5))
                 (sr:write-transit axis spans data layer)
@@ -2499,10 +2504,7 @@ Unlock layer " locked " before using Quick Build."))
      nil)
     (T
      (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
-     (if (= 0 (logand 8 (getvar "UNDOCTL")))
-       (progn
-         (vla-StartUndoMark doc)
-         (setq undo-open T)))
+     (setq undo-open (sr:begin-undo doc))
      (setq writing T)
      (regapp "SR-CORRIDOR")
      (regapp "SR-CORRIDOR-EDGE")
@@ -3136,8 +3138,7 @@ Could not save the corridor data on alignment "
   (if (not (vl-every 'sr:writable-p appearance))
     (progn (princ "\nUnlock the road fill and marking layers first.") (exit)))
   (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
-  (if (= 0 (logand 8 (getvar "UNDOCTL")))
-    (progn (vla-StartUndoMark doc) (setq undo T)))
+  (setq undo (sr:begin-undo doc))
   (if (or (nth 4 first) (nth 4 second))
     (if (and (not (tblsearch "APPID" "SR-JUNCTION-EDIT")) (not (regapp "SR-JUNCTION-EDIT")))
       (progn (princ "\nUnable to register the corridor junction marker.") (exit))))
@@ -3808,8 +3809,7 @@ Could not save the corridor data on alignment "
      (princ "\nAppearance needs complete corridor boundaries. Rebuild or repair the affected edges first."))
     (T
      (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
-     (if (= 0 (logand 8 (getvar "UNDOCTL")))
-       (progn (vla-StartUndoMark doc) (setq undo T)))
+     (setq undo (sr:begin-undo doc))
      (if scheme (sr:style-render axis paintable owner scheme dimensions))
      (foreach entity old
        (if (entdel entity) (setq erased (cons entity erased)) (exit)))
@@ -3997,8 +3997,7 @@ Could not save the corridor data on alignment "
                       (if points
                         (progn
                           (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
-                          (if (= 0 (logand 8 (getvar "UNDOCTL")))
-                            (progn (vla-StartUndoMark doc) (setq undo T)))
+                          (setq undo (sr:begin-undo doc))
                           (setq new-axis (sr:poly points nil (getvar "CLAYER"))
                                 axes (list new-axis))))
                       (setq built (sr:quick-build axes profile scheme dimensions))
